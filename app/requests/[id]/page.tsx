@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { formatDateTime, formatShortDate } from "@/lib/date";
 import { taskRepository } from "@/lib/storage";
 import type { ProjectTask } from "@/lib/types";
 
@@ -80,35 +81,31 @@ export default function RequestDetailsPage() {
           </div>
           <div>
             <small>Requested Date</small>
-            <p>{task.requestedDate}</p>
-          </div>
-          <div>
-            <small>ETA</small>
-            <p>{task.etaDate || "Not set"}</p>
+            <p>{formatShortDate(task.requestedDate)}</p>
           </div>
           <div>
             <small>Delivery Date</small>
-            <p>{task.deliveryDate || "Not set"}</p>
+            <p>{formatShortDate(task.deliveryDate)}</p>
           </div>
           <div>
             <small>Confirmed Date</small>
-            <p>{task.confirmedDate || "-"}</p>
+            <p>{formatShortDate(task.confirmedDate)}</p>
           </div>
           <div>
             <small>Approved Date</small>
-            <p>{task.approvedDate || "-"}</p>
+            <p>{formatShortDate(task.approvedDate)}</p>
           </div>
           <div>
             <small>Completed Date</small>
-            <p>{task.completedDate || "-"}</p>
+            <p>{formatShortDate(task.completedDate)}</p>
           </div>
           <div>
             <small>Handover Date</small>
-            <p>{task.handoverDate || "-"}</p>
+            <p>{formatShortDate(task.handoverDate)}</p>
           </div>
           <div>
             <small>Created</small>
-            <p>{new Date(task.createdAt).toLocaleString()}</p>
+            <p>{formatDateTime(task.createdAt)}</p>
           </div>
         </div>
       </section>
@@ -156,7 +153,7 @@ export default function RequestDetailsPage() {
             .reverse()
             .map((item) => (
               <li key={item.id}>
-                <strong>{item.status}</strong> on {new Date(item.changedAt).toLocaleString()}
+                <strong>{item.status}</strong> on {formatDateTime(item.changedAt)}
                 {item.note ? ` - ${item.note}` : ""}
               </li>
             ))}
@@ -172,7 +169,7 @@ export default function RequestDetailsPage() {
               .reverse()
               .map((entry) => (
                 <li key={entry.id}>
-                  {entry.previousEstimatedHours}h to {entry.nextEstimatedHours}h on {new Date(entry.changedAt).toLocaleString()}
+                  {entry.previousEstimatedHours}h to {entry.nextEstimatedHours}h on {formatDateTime(entry.changedAt)}
                   {entry.reason ? ` - ${entry.reason}` : ""}
                 </li>
               ))}

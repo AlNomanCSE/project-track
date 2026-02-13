@@ -37,8 +37,13 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 
 Run the SQL in `/supabase/schema.sql` inside Supabase SQL Editor.
 
-This creates `public.project_tasks` where each task is stored as one database row.
-If old snapshot data exists in `project_tracker_state`, the SQL migrates it automatically.
+It sets up this normalized structure:
+- `public.project_tasks` (current task state, one row per task)
+- `public.task_events` (status changes, notes, rollback reason)
+- `public.task_hour_revisions` (estimate change history and reason)
+
+If old snapshot data exists in `project_tracker_state` or old JSON columns exist in `project_tasks`,
+the SQL migrates them automatically.
 
 ## Run locally
 

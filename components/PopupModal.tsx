@@ -7,6 +7,9 @@ type PopupModalProps = {
   variant?: "info" | "success" | "error" | "confirm";
   confirmLabel?: string;
   cancelLabel?: string;
+  confirmDisabled?: boolean;
+  confirmOrder?: "close-first" | "confirm-first";
+  children?: React.ReactNode;
   onClose: () => void;
   onConfirm?: () => void;
 };
@@ -18,6 +21,9 @@ export default function PopupModal({
   variant = "info",
   confirmLabel = "OK",
   cancelLabel = "Cancel",
+  confirmDisabled = false,
+  confirmOrder = "close-first",
+  children,
   onClose,
   onConfirm
 }: PopupModalProps) {
@@ -28,6 +34,7 @@ export default function PopupModal({
       <div className={`modal-card ${variant}`}>
         <h3>{title}</h3>
         <p>{message}</p>
+        {children}
         <div className="modal-actions">
           {variant === "confirm" ? (
             <>
@@ -37,7 +44,13 @@ export default function PopupModal({
               <button
                 type="button"
                 className="danger"
+                disabled={confirmDisabled}
                 onClick={() => {
+                  if (confirmOrder === "confirm-first") {
+                    onConfirm?.();
+                    onClose();
+                    return;
+                  }
                   onClose();
                   onConfirm?.();
                 }}

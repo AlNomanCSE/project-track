@@ -17,7 +17,15 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {children}
+        <footer className="site-credit">
+          All right received and designed and developed by{" "}
+          <a href="https://abdullahnomancse.netlify.app/" target="_blank" rel="noreferrer">
+            Abdullah Al Noman
+          </a>
+        </footer>
+      </body>
     </html>
   );
 }

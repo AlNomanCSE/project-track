@@ -13,10 +13,24 @@ function createId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function isRollbackToClientReview(from: TaskStatus, to: TaskStatus): boolean {
+  const fromIndex = STATUSES.indexOf(from);
+  const confirmedIndex = STATUSES.indexOf("Confirmed");
+  return to === "Client Review" && fromIndex >= confirmedIndex;
+}
+
 export default function HomePage() {
   const [tasks, setTasks] = useState<ProjectTask[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeTab, setActiveTab] = useState<"add" | "list">("add");
+  const [pendingConfirmedUpdate, setPendingConfirmedUpdate] = useState<{
+    taskId: string;
+    nextStatus: TaskStatus;
+    note: string;
+    statusDate?: string;
+    estimatedHoursOnStatus?: number;
+  } | null>(null);
+  const [confirmedDeliveryDate, setConfirmedDeliveryDate] = useState("");
   const [modalState, setModalState] = useState<{
     open: boolean;
     title: string;
@@ -154,51 +168,129 @@ export default function HomePage() {
     nextStatus: TaskStatus,
     note: string,
     statusDate?: string,
-    estimatedHoursOnStatus?: number
+    estimatedHoursOnStatus?: number,
+    deliveryDateOverride?: string
   ) => {
-    const next = tasks.map((task) => {
-      if (task.id !== taskId) return task;
-      if (!canTransition(task.status, nextStatus)) {
-        openModal("Invalid Workflow", "Choose same or forward status only.", "error");
-        return task;
-      }
+    const target = tasks.find((task) => task.id === taskId);
+    if (!target) return;
+    const isRollback = isRollbackToClientReview(target.status, nextStatus);
 
-      const requiresEstimate = ["Confirmed", "Approved", "Working On It", "Completed", "Handover"].includes(nextStatus);
-      const effectiveEstimate = estimatedHoursOnStatus ?? task.estimatedHours;
-      if (requiresEstimate && (!Number.isFinite(effectiveEstimate) || effectiveEstimate <= 0)) {
-        openModal(
-          "Estimated Time Required",
-          "Please set Estimated Hours before moving to Confirmed or later statuses.",
-          "error"
-        );
-        return task;
-      }
+    if (!canTransition(target.status, nextStatus)) {
+      openModal(
+        "Invalid Workflow",
+        "Only same step, next step, or rollback to Client Review from Confirmed+ is allowed.",
+        "error"
+      );
+      return;
+    }
 
+    if (isRollback && !note.trim()) {
+      openModal("Reason Required", "Please add a rollback reason in Status Note.", "error");
+      return;
+    }
+
+    const isTransition = target.status !== nextStatus;
+    const needsDateFromPrompt = nextStatus === "Confirmed" && !target.deliveryDate && !deliveryDateOverride;
+    if (isTransition && !statusDate && !needsDateFromPrompt) {
+      openModal("Status Date Required", "Please select Status Date when changing status.", "error");
+      return;
+    }
+
+    const requiresEstimate = ["Confirmed", "Approved", "Working On It", "Completed", "Handover"].includes(nextStatus);
+    const effectiveEstimate = estimatedHoursOnStatus ?? target.estimatedHours;
+    if (requiresEstimate && (!Number.isFinite(effectiveEstimate) || effectiveEstimate <= 0)) {
+      openModal(
+        "Estimated Time Required",
+        "Please set Estimated Hours before moving to Confirmed or later statuses.",
+        "error"
+      );
+      return;
+    }
+
+    const commitStatus = (deliveryDateOverride?: string) => {
       const nowIso = new Date().toISOString();
-      const effectiveDate = statusDate || new Date().toISOString().slice(0, 10);
-      const updated: ProjectTask = {
-        ...task,
-        status: nextStatus,
-        estimatedHours: effectiveEstimate,
-        deliveryDate:
-          nextStatus === "Confirmed" || nextStatus === "Approved" ? effectiveDate : task.deliveryDate,
-        updatedAt: nowIso,
-        history: [
-          ...task.history,
-          {
+
+      const next = tasks.map((task) => {
+        if (task.id !== taskId) return task;
+
+        const effectiveStatusDate = statusDate || deliveryDateOverride;
+        const nextEstimated = isRollback ? 0 : effectiveEstimate;
+        const hourRevisions = [...task.hourRevisions];
+        if (task.estimatedHours !== nextEstimated) {
+          hourRevisions.push({
             id: createId(),
-            status: nextStatus,
+            previousEstimatedHours: task.estimatedHours,
+            nextEstimatedHours: nextEstimated,
             changedAt: nowIso,
-            note: `${note || ""}${statusDate ? `${note ? " | " : ""}Status date: ${statusDate}` : ""}` || undefined
-          }
-        ]
-      };
+            reason: isRollback ? note.trim() || "Rollback to Client Review" : "Status update"
+          });
+        }
 
-      return applyStatusMetadata(updated, nextStatus, statusDate);
-    });
+        const deliveryDate =
+          isRollback
+            ? undefined
+            : nextStatus === "Confirmed"
+            ? deliveryDateOverride || task.deliveryDate
+            : nextStatus === "Approved"
+              ? task.deliveryDate
+              : task.deliveryDate;
 
-    persist(next);
-    openModal("Status Updated", "Request status has been updated.", "success");
+        const updated: ProjectTask = {
+          ...task,
+          status: nextStatus,
+          estimatedHours: nextEstimated,
+          deliveryDate,
+          confirmedDate: isRollback ? undefined : task.confirmedDate,
+          approvedDate: isRollback ? undefined : task.approvedDate,
+          startDate: isRollback ? undefined : task.startDate,
+          completedDate: isRollback ? undefined : task.completedDate,
+          handoverDate: isRollback ? undefined : task.handoverDate,
+          updatedAt: nowIso,
+          hourRevisions,
+          history: [
+            ...task.history,
+            {
+              id: createId(),
+              status: nextStatus,
+              changedAt: nowIso,
+              note: `${note || ""}${effectiveStatusDate ? `${note ? " | " : ""}Status date: ${effectiveStatusDate}` : ""}` || undefined
+            }
+          ]
+        };
+
+        return applyStatusMetadata(updated, nextStatus, effectiveStatusDate);
+      });
+
+      persist(next);
+      openModal("Status Updated", "Request status has been updated.", "success");
+    };
+
+    if (nextStatus === "Confirmed" && !target.deliveryDate) {
+      setPendingConfirmedUpdate({ taskId, nextStatus, note, statusDate, estimatedHoursOnStatus: effectiveEstimate });
+      setConfirmedDeliveryDate(statusDate || "");
+      return;
+    }
+
+    commitStatus();
+  };
+
+  const confirmPendingConfirmedStatus = () => {
+    if (!pendingConfirmedUpdate) return;
+    if (!confirmedDeliveryDate) {
+      openModal("Delivery Date Required", "Please select Delivery Date to confirm this request.", "error");
+      return;
+    }
+
+    updateStatus(
+      pendingConfirmedUpdate.taskId,
+      pendingConfirmedUpdate.nextStatus,
+      pendingConfirmedUpdate.note,
+      pendingConfirmedUpdate.statusDate || confirmedDeliveryDate,
+      pendingConfirmedUpdate.estimatedHoursOnStatus,
+      confirmedDeliveryDate
+    );
+    setPendingConfirmedUpdate(null);
+    setConfirmedDeliveryDate("");
   };
 
   const updateHours = (
@@ -263,6 +355,12 @@ export default function HomePage() {
       clientName?: string;
       requestedDate: string;
       changePoints: string[];
+      status: TaskStatus;
+      statusDate?: string;
+      estimatedHours: number;
+      loggedHours: number;
+      hourlyRate?: number;
+      hourReason?: string;
       deliveryDate?: string;
       confirmedDate?: string;
       approvedDate?: string;
@@ -270,33 +368,101 @@ export default function HomePage() {
       handoverDate?: string;
     }
   ) => {
+    const statusIndex = (status: TaskStatus) => STATUSES.indexOf(status);
+    const target = tasks.find((task) => task.id === taskId);
+    if (!target) return;
+    const isRollback = isRollbackToClientReview(target.status, payload.status);
+
+    if (!canTransition(target.status, payload.status)) {
+      openModal(
+        "Invalid Workflow",
+        "Only same step, next step, or rollback to Client Review from Confirmed+ is allowed.",
+        "error"
+      );
+      return;
+    }
+
+    if (isRollback && !(payload.hourReason || "").trim()) {
+      openModal("Reason Required", "Please provide reason before rolling back to Client Review.", "error");
+      return;
+    }
+
+    if (payload.loggedHours < 0 || payload.estimatedHours < 0) {
+      openModal("Invalid Hours", "Estimated and logged hours cannot be negative.", "error");
+      return;
+    }
+
+    const requiresEstimate = ["Confirmed", "Approved", "Working On It", "Completed", "Handover"].includes(payload.status);
+    if (requiresEstimate && payload.estimatedHours <= 0) {
+      openModal("Estimated Time Required", "Please set estimated hours before moving to this status.", "error");
+      return;
+    }
+
+    if (payload.status === "Confirmed" && !payload.deliveryDate) {
+      openModal("Delivery Date Required", "Please set delivery date before saving Confirmed status.", "error");
+      return;
+    }
+
+    if (target.status !== payload.status && !payload.statusDate) {
+      openModal("Status Date Required", "Please set status date when changing status.", "error");
+      return;
+    }
+
     const next = tasks.map((task) => {
       if (task.id !== taskId) return task;
 
       const nowIso = new Date().toISOString();
-      return {
+      const statusDate = payload.statusDate;
+      const nextEstimated = isRollback ? 0 : payload.estimatedHours;
+      const currentIndex = statusIndex(payload.status);
+      const confirmedDate = currentIndex >= statusIndex("Confirmed") ? payload.confirmedDate : undefined;
+      const approvedDate = currentIndex >= statusIndex("Approved") ? payload.approvedDate : undefined;
+      const completedDate = currentIndex >= statusIndex("Completed") ? payload.completedDate : undefined;
+      const handoverDate = currentIndex >= statusIndex("Handover") ? payload.handoverDate : undefined;
+
+      const history = [...task.history];
+      const hourRevisions = [...task.hourRevisions];
+
+      if (task.estimatedHours !== nextEstimated) {
+        hourRevisions.push({
+          id: createId(),
+          previousEstimatedHours: task.estimatedHours,
+          nextEstimatedHours: nextEstimated,
+          changedAt: nowIso,
+          reason: payload.hourReason || (isRollback ? "Rollback to Client Review" : undefined)
+        });
+      }
+
+      history.push({
+        id: createId(),
+        status: payload.status,
+        changedAt: nowIso,
+        note: `Request edited${statusDate ? ` | Status date: ${statusDate}` : ""}${payload.hourReason ? ` | ${payload.hourReason}` : ""}`
+      });
+
+      const updated: ProjectTask = {
         ...task,
         title: payload.title,
         clientName: payload.clientName,
         requestedDate: payload.requestedDate,
         changePoints: payload.changePoints,
         description: payload.changePoints.join(" | "),
-        deliveryDate: payload.deliveryDate,
-        confirmedDate: payload.confirmedDate,
-        approvedDate: payload.approvedDate,
-        completedDate: payload.completedDate,
-        handoverDate: payload.handoverDate,
+        status: payload.status,
+        estimatedHours: nextEstimated,
+        loggedHours: payload.loggedHours,
+        hourlyRate: payload.hourlyRate,
+        deliveryDate: isRollback ? undefined : payload.deliveryDate,
+        confirmedDate: isRollback ? undefined : confirmedDate,
+        approvedDate: isRollback ? undefined : approvedDate,
+        startDate: isRollback ? undefined : task.startDate,
+        completedDate: isRollback ? undefined : completedDate,
+        handoverDate: isRollback ? undefined : handoverDate,
         updatedAt: nowIso,
-        history: [
-          ...task.history,
-          {
-            id: createId(),
-            status: task.status,
-            changedAt: nowIso,
-            note: "Request details updated"
-          }
-        ]
+        history,
+        hourRevisions
       };
+
+      return applyStatusMetadata(updated, payload.status, statusDate);
     });
 
     persist(next);
@@ -441,8 +607,6 @@ export default function HomePage() {
               <TaskFilters filters={filters} onChange={setFilters} />
               <TaskList
                 tasks={filtered}
-                onStatusUpdate={updateStatus}
-                onHoursUpdate={updateHours}
                 onTaskUpdate={updateTask}
                 onRequestDelete={requestDeleteTask}
                 onNotify={openModal}
@@ -451,6 +615,30 @@ export default function HomePage() {
           )}
         </section>
       </section>
+
+      <PopupModal
+        open={pendingConfirmedUpdate !== null}
+        title="Delivery Date Required"
+        message="To set status to Confirmed, please provide the delivery date."
+        variant="confirm"
+        confirmLabel="Confirm Status"
+        confirmDisabled={!confirmedDeliveryDate}
+        confirmOrder="confirm-first"
+        onClose={() => {
+          setPendingConfirmedUpdate(null);
+          setConfirmedDeliveryDate("");
+        }}
+        onConfirm={confirmPendingConfirmedStatus}
+      >
+        <label>
+          Delivery Date
+          <input
+            type="date"
+            value={confirmedDeliveryDate}
+            onChange={(e) => setConfirmedDeliveryDate(e.target.value)}
+          />
+        </label>
+      </PopupModal>
 
       <PopupModal
         open={modalState.open}
