@@ -4,24 +4,34 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { formatDateTime, formatShortDate } from "@/lib/date";
+import { readSessionUser, readUsers } from "@/lib/auth";
+import { readTaskMetaById, type TaskMetaById } from "@/lib/task-access";
 import { taskRepository } from "@/lib/storage";
-import type { ProjectTask } from "@/lib/types";
+import type { AppUser, ProjectTask } from "@/lib/types";
 
 export default function RequestDetailsPage() {
   const params = useParams<{ id: string }>();
   const [tasks, setTasks] = useState<ProjectTask[]>([]);
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
+  const [taskMetaById, setTaskMetaById] = useState<TaskMetaById>({});
 
   useEffect(() => {
     let active = true;
 
-    const loadTasks = async () => {
-      const next = await taskRepository.read();
-      if (active) {
-        setTasks(next);
-      }
+    const loadData = async () => {
+      const nextTasks = await taskRepository.read();
+      const users = await readUsers();
+      const sessionUser = await readSessionUser(users);
+      const meta = await readTaskMetaById();
+
+      if (!active) return;
+
+      setTasks(nextTasks);
+      setCurrentUser(sessionUser);
+      setTaskMetaById(meta);
     };
 
-    void loadTasks();
+    void loadData();
 
     return () => {
       active = false;
@@ -34,12 +44,45 @@ export default function RequestDetailsPage() {
     return tasks.find((item) => item.id === id) || null;
   }, [params?.id, tasks]);
 
+  if (!currentUser) {
+    return (
+      <main className="page">
+        <section className="card stack">
+          <h1>Login Required</h1>
+          <p className="muted">Please login from dashboard to view request details.</p>
+          <div>
+            <Link href="/" className="button-link">
+              Back To Dashboard
+            </Link>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   if (!task) {
     return (
       <main className="page">
         <section className="card stack">
           <h1>Request Not Found</h1>
           <p className="muted">This request may have been deleted or the URL is invalid.</p>
+          <div>
+            <Link href="/" className="button-link">
+              Back To Dashboard
+            </Link>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  const meta = taskMetaById[task.id];
+  if (currentUser.role === "client" && meta?.ownerUserId !== currentUser.id) {
+    return (
+      <main className="page">
+        <section className="card stack">
+          <h1>Access Denied</h1>
+          <p className="muted">You can view only your own requests.</p>
           <div>
             <Link href="/" className="button-link">
               Back To Dashboard
@@ -61,9 +104,14 @@ export default function RequestDetailsPage() {
             <h1>{task.title}</h1>
             <p className="muted">Request ID: {task.id}</p>
           </div>
-          <span className="badge" data-status={task.status}>
-            {task.status}
-          </span>
+          <div className="stack tight">
+            <span className="badge" data-status={task.status}>
+              {task.status}
+            </span>
+            <span className="badge" data-approval={meta?.approvalStatus || "pending"}>
+              {(meta?.approvalStatus || "pending").toUpperCase()}
+            </span>
+          </div>
         </div>
         <div>
           <Link href="/" className="button-link secondary-link">

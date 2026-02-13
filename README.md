@@ -41,6 +41,8 @@ It sets up this normalized structure:
 - `public.project_tasks` (current task state, one row per task)
 - `public.task_events` (status changes, notes, rollback reason)
 - `public.task_hour_revisions` (estimate change history and reason)
+- `public.app_users` (super_user/admin/client registrations and approval status)
+- `public.task_access_meta` (task owner + admin approval state)
 
 If old snapshot data exists in `project_tracker_state` or old JSON columns exist in `project_tasks`,
 the SQL migrates them automatically.
@@ -58,3 +60,6 @@ Then open `http://localhost:3000`.
 
 - Current RLS policies in `supabase/schema.sql` allow anonymous read/write so the frontend can sync directly.
 - For production, replace anon-wide policies with authenticated user-based policies.
+- Super user is fixed by email in `/lib/super-user.ts` (`abdullahalnomancse@gmail.com`).
+- Only this super user can approve/reject users, approve/reject tasks, and delete admin/client users.
+- Super user management page: `/super/users`.

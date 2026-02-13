@@ -103,6 +103,71 @@ create policy "task hour revisions update" on public.task_hour_revisions for upd
 drop policy if exists "task hour revisions delete" on public.task_hour_revisions;
 create policy "task hour revisions delete" on public.task_hour_revisions for delete to anon using (true);
 
+-- App users (admin/client registration + admin approval)
+create table if not exists public.app_users (
+  id text primary key,
+  name text not null,
+  email text not null unique,
+  password text not null,
+  role text not null check (role in ('super_user', 'admin', 'client')),
+  status text not null check (status in ('pending', 'approved', 'rejected')),
+  approved_by_user_id text references public.app_users(id),
+  approved_at timestamptz,
+  rejection_reason text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.app_users drop constraint if exists app_users_role_check;
+alter table public.app_users
+  add constraint app_users_role_check
+  check (role in ('super_user', 'admin', 'client'));
+
+create index if not exists ix_app_users_status on public.app_users(status);
+create index if not exists ix_app_users_role on public.app_users(role);
+
+alter table public.app_users enable row level security;
+
+drop policy if exists "app users select" on public.app_users;
+create policy "app users select" on public.app_users for select to anon using (true);
+
+drop policy if exists "app users insert" on public.app_users;
+create policy "app users insert" on public.app_users for insert to anon with check (true);
+
+drop policy if exists "app users update" on public.app_users;
+create policy "app users update" on public.app_users for update to anon using (true) with check (true);
+
+drop policy if exists "app users delete" on public.app_users;
+create policy "app users delete" on public.app_users for delete to anon using (true);
+
+-- Task-level ownership and approval state
+create table if not exists public.task_access_meta (
+  task_id text primary key references public.project_tasks(id) on delete cascade,
+  owner_user_id text references public.app_users(id),
+  approval_status text not null check (approval_status in ('pending', 'approved', 'rejected')),
+  decision_note text,
+  decided_by_user_id text references public.app_users(id),
+  decided_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists ix_task_access_meta_owner on public.task_access_meta(owner_user_id);
+create index if not exists ix_task_access_meta_approval on public.task_access_meta(approval_status);
+
+alter table public.task_access_meta enable row level security;
+
+drop policy if exists "task access meta select" on public.task_access_meta;
+create policy "task access meta select" on public.task_access_meta for select to anon using (true);
+
+drop policy if exists "task access meta insert" on public.task_access_meta;
+create policy "task access meta insert" on public.task_access_meta for insert to anon with check (true);
+
+drop policy if exists "task access meta update" on public.task_access_meta;
+create policy "task access meta update" on public.task_access_meta for update to anon using (true) with check (true);
+
+drop policy if exists "task access meta delete" on public.task_access_meta;
+create policy "task access meta delete" on public.task_access_meta for delete to anon using (true);
+
 -- Migrate old snapshot-style table if it exists:
 -- project_tracker_state.tasks (json array) -> project_tasks rows
 do $$
