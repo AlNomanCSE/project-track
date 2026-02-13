@@ -1,10 +1,13 @@
+import { supabase } from "@/lib/supabase";
 import { STATUSES, type ProjectTask, type TaskStatus } from "@/lib/types";
 
 const STORAGE_KEY = "project-tracker-agent-v1";
+const SUPABASE_STATE_TABLE = "project_tracker_state";
+const SUPABASE_STATE_ID = "default";
 
 type TaskRepository = {
-  read: () => ProjectTask[];
-  write: (tasks: ProjectTask[]) => void;
+  read: () => Promise<ProjectTask[]>;
+  write: (tasks: ProjectTask[]) => Promise<void>;
 };
 
 const numberOrDefault = (value: unknown, fallback: number): number => {
@@ -87,7 +90,7 @@ const normalizeTask = (rawTask: unknown): ProjectTask | null => {
 };
 
 class LocalStorageRepository implements TaskRepository {
-  read(): ProjectTask[] {
+  async read(): Promise<ProjectTask[]> {
     if (typeof window === "undefined") return [];
 
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -102,13 +105,59 @@ class LocalStorageRepository implements TaskRepository {
     }
   }
 
-  write(tasks: ProjectTask[]) {
+  async write(tasks: ProjectTask[]) {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
   }
 }
 
-export const taskRepository: TaskRepository = new LocalStorageRepository();
+class SupabaseTaskRepository implements TaskRepository {
+  constructor(private readonly fallback: TaskRepository) {}
+
+  async read(): Promise<ProjectTask[]> {
+    const local = await this.fallback.read();
+    if (!supabase) return local;
+
+    const { data, error } = await supabase
+      .from(SUPABASE_STATE_TABLE)
+      .select("tasks")
+      .eq("id", SUPABASE_STATE_ID)
+      .maybeSingle();
+
+    if (error) {
+      console.warn("Supabase read failed, using local data:", error.message);
+      return local;
+    }
+
+    const rawTasks = data?.tasks;
+    if (!Array.isArray(rawTasks)) {
+      return local;
+    }
+
+    const normalized = rawTasks.map(normalizeTask).filter((task): task is ProjectTask => task !== null);
+
+    await this.fallback.write(normalized);
+    return normalized;
+  }
+
+  async write(tasks: ProjectTask[]): Promise<void> {
+    await this.fallback.write(tasks);
+
+    if (!supabase) return;
+
+    const { error } = await supabase.from(SUPABASE_STATE_TABLE).upsert({
+      id: SUPABASE_STATE_ID,
+      tasks,
+      updated_at: new Date().toISOString()
+    });
+
+    if (error) {
+      console.warn("Supabase write failed, local data kept:", error.message);
+    }
+  }
+}
+
+export const taskRepository: TaskRepository = new SupabaseTaskRepository(new LocalStorageRepository());
 
 export function exportTasks(tasks: ProjectTask[]) {
   return JSON.stringify(tasks, null, 2);
