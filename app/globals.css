@@ -320,6 +320,24 @@ button.danger {
   color: #9de2ac;
 }
 
+.badge[data-approval="pending"] {
+  border-color: rgba(245, 166, 35, 0.45);
+  background: rgba(245, 166, 35, 0.12);
+  color: #ffd37a;
+}
+
+.badge[data-approval="approved"] {
+  border-color: rgba(85, 178, 111, 0.5);
+  background: rgba(85, 178, 111, 0.15);
+  color: #9de2ac;
+}
+
+.badge[data-approval="rejected"] {
+  border-color: rgba(239, 118, 109, 0.45);
+  background: rgba(239, 118, 109, 0.12);
+  color: #f8b1ab;
+}
+
 .change-points {
   margin: 8px 0 0;
   padding-left: 18px;
@@ -403,6 +421,27 @@ button.danger {
 
 .tab-shell {
   padding: 14px;
+}
+
+.auth-page {
+  max-width: 760px;
+}
+
+.approval-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.approval-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #131d17;
+  padding: 10px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
 }
 
 .tab-header {
@@ -587,6 +626,10 @@ button.danger {
 
   .stats {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .approval-grid {
+    grid-template-columns: 1fr;
   }
 
   .request-sections {

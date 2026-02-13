@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import TaskForm from "@/components/TaskForm";
 import TaskFilters from "@/components/TaskFilters";
@@ -7,7 +8,26 @@ import TaskList from "@/components/TaskList";
 import PopupModal from "@/components/PopupModal";
 import { taskRepository, exportTasks, importTasks } from "@/lib/storage";
 import { filterTasks, canTransition, applyStatusMetadata } from "@/lib/workflow";
-import { STATUSES, type ProjectTask, type TaskFilters as Filters, type TaskStatus } from "@/lib/types";
+import { decideUserApproval, loginUser, logoutUser, readSessionUser, readUsers, registerUser } from "@/lib/auth";
+import {
+  decideTaskApproval,
+  ensureTaskMetaSync,
+  getVisibleTasks,
+  metaForNewTask,
+  readTaskMetaById,
+  type TaskMetaById,
+  writeTaskMetaById
+} from "@/lib/task-access";
+import {
+  STATUSES,
+  type AppUser,
+  type ProjectTask,
+  type TaskApprovalStatus,
+  type TaskFilters as Filters,
+  type TaskStatus,
+  type UserRole
+} from "@/lib/types";
+import { isSuperUser } from "@/lib/super-user";
 
 function createId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -21,8 +41,22 @@ function isRollbackToClientReview(from: TaskStatus, to: TaskStatus): boolean {
 
 export default function HomePage() {
   const [tasks, setTasks] = useState<ProjectTask[]>([]);
+  const [taskMetaById, setTaskMetaById] = useState<TaskMetaById>({});
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeTab, setActiveTab] = useState<"add" | "list">("add");
+  const [authTab, setAuthTab] = useState<"login" | "register">("login");
+
+  const [loginValues, setLoginValues] = useState({ email: "", password: "" });
+  const [registerValues, setRegisterValues] = useState({
+    name: "",
+    email: "",
+    password: "",
+    role: "client" as UserRole
+  });
+
   const [pendingConfirmedUpdate, setPendingConfirmedUpdate] = useState<{
     taskId: string;
     nextStatus: TaskStatus;
@@ -31,6 +65,14 @@ export default function HomePage() {
     estimatedHoursOnStatus?: number;
   } | null>(null);
   const [confirmedDeliveryDate, setConfirmedDeliveryDate] = useState("");
+
+  const [filters, setFilters] = useState<Filters>({
+    status: "All",
+    fromDate: "",
+    toDate: "",
+    query: ""
+  });
+
   const [modalState, setModalState] = useState<{
     open: boolean;
     title: string;
@@ -43,39 +85,6 @@ export default function HomePage() {
     message: "",
     variant: "info"
   });
-
-  const [filters, setFilters] = useState<Filters>({
-    status: "All",
-    fromDate: "",
-    toDate: "",
-    query: ""
-  });
-
-  const filtered = useMemo(
-    () => filterTasks(tasks, filters).sort((a, b) => b.requestedDate.localeCompare(a.requestedDate)),
-    [tasks, filters]
-  );
-
-  const stats = useMemo(() => {
-    return STATUSES.map((status) => ({
-      status,
-      count: tasks.filter((t) => t.status === status).length
-    }));
-  }, [tasks]);
-
-  const hourSummary = useMemo(() => {
-    const estimated = tasks.reduce((sum, task) => sum + task.estimatedHours, 0);
-    const logged = tasks.reduce((sum, task) => sum + task.loggedHours, 0);
-    const remaining = Math.max(estimated - logged, 0);
-    const completed = tasks.filter((task) => task.status === "Completed" || task.status === "Handover").length;
-
-    return { estimated, logged, remaining, completed };
-  }, [tasks]);
-
-  const persist = (next: ProjectTask[]) => {
-    setTasks(next);
-    void taskRepository.write(next);
-  };
 
   const openModal = (
     title: string,
@@ -90,17 +99,43 @@ export default function HomePage() {
     setModalState((prev) => ({ ...prev, open: false, onConfirm: undefined }));
   };
 
+  const persistTasks = (next: ProjectTask[]) => {
+    setTasks(next);
+    void taskRepository.write(next);
+  };
+
+  const persistTaskMeta = (next: TaskMetaById) => {
+    setTaskMetaById(next);
+    void writeTaskMetaById(next);
+  };
+
+  const refreshUsers = async () => {
+    const nextUsers = await readUsers();
+    setUsers(nextUsers);
+    return nextUsers;
+  };
+
   useEffect(() => {
     let active = true;
 
-    const loadTasks = async () => {
-      const initialTasks = await taskRepository.read();
-      if (active) {
-        setTasks(initialTasks);
+    const loadData = async () => {
+      const [initialTasks, initialUsers] = await Promise.all([taskRepository.read(), readUsers()]);
+      const sessionUser = await readSessionUser(initialUsers);
+      const initialMeta = await readTaskMetaById();
+      const synced = ensureTaskMetaSync(initialTasks, sessionUser, initialMeta);
+
+      if (!active) return;
+
+      setTasks(initialTasks);
+      setUsers(initialUsers);
+      setCurrentUser(sessionUser);
+      setTaskMetaById(synced.next);
+      if (synced.changed) {
+        void writeTaskMetaById(synced.next);
       }
     };
 
-    void loadTasks();
+    void loadData();
 
     return () => {
       active = false;
@@ -124,6 +159,48 @@ export default function HomePage() {
     setActiveTab(tab);
   };
 
+  const visibleTasks = useMemo(() => {
+    if (!currentUser) return [];
+    const accessible = getVisibleTasks(tasks, taskMetaById, currentUser);
+    return filterTasks(accessible, filters).sort((a, b) => b.requestedDate.localeCompare(a.requestedDate));
+  }, [tasks, taskMetaById, currentUser, filters]);
+  const isCurrentSuperUser = isSuperUser(currentUser);
+  const canManageTasks = !!currentUser && (currentUser.role === "admin" || currentUser.role === "super_user");
+
+  const approvalByTaskId = useMemo(() => {
+    const map: Record<string, TaskApprovalStatus> = {};
+    for (const task of visibleTasks) {
+      map[task.id] = taskMetaById[task.id]?.approvalStatus ?? "pending";
+    }
+    return map;
+  }, [visibleTasks, taskMetaById]);
+
+  const pendingUsers = useMemo(
+    () => users.filter((user) => user.status === "pending"),
+    [users]
+  );
+
+  const pendingTaskApprovals = useMemo(
+    () => tasks.filter((task) => taskMetaById[task.id]?.approvalStatus === "pending"),
+    [tasks, taskMetaById]
+  );
+
+  const stats = useMemo(() => {
+    return STATUSES.map((status) => ({
+      status,
+      count: visibleTasks.filter((t) => t.status === status).length
+    }));
+  }, [visibleTasks]);
+
+  const hourSummary = useMemo(() => {
+    const estimated = visibleTasks.reduce((sum, task) => sum + task.estimatedHours, 0);
+    const logged = visibleTasks.reduce((sum, task) => sum + task.loggedHours, 0);
+    const remaining = Math.max(estimated - logged, 0);
+    const completed = visibleTasks.filter((task) => task.status === "Completed" || task.status === "Handover").length;
+
+    return { estimated, logged, remaining, completed };
+  }, [visibleTasks]);
+
   const addTask = (values: {
     title: string;
     changePoints: string[];
@@ -132,6 +209,8 @@ export default function HomePage() {
     estimatedHours?: number;
     hourlyRate?: number;
   }) => {
+    if (!currentUser) return;
+
     const nowIso = new Date().toISOString();
     const task: ProjectTask = {
       id: createId(),
@@ -152,15 +231,32 @@ export default function HomePage() {
           status: "Requested",
           changedAt: nowIso,
           note:
-            values.estimatedHours !== undefined
-              ? `Request captured with estimate ${values.estimatedHours}h`
-              : "Request captured (estimate pending)"
+            currentUser.role === "client"
+              ? "Client submitted request (pending admin approval)"
+              : values.estimatedHours !== undefined
+                ? `Request captured with estimate ${values.estimatedHours}h`
+                : "Request captured (estimate pending)"
         }
       ],
       hourRevisions: []
     };
-    persist([task, ...tasks]);
-    openModal("Request Added", "New change request has been added successfully.", "success");
+
+    const nextTasks = [task, ...tasks];
+    persistTasks(nextTasks);
+
+    const nextMeta = {
+      ...taskMetaById,
+      [task.id]: metaForNewTask(task.id, currentUser)
+    };
+    persistTaskMeta(nextMeta);
+
+    openModal(
+      currentUser.role === "client" ? "Request Submitted" : "Request Added",
+      currentUser.role === "client"
+        ? "Task created. Admin approval is required for final confirmation."
+        : "New change request has been added successfully.",
+      "success"
+    );
   };
 
   const updateStatus = (
@@ -171,6 +267,11 @@ export default function HomePage() {
     estimatedHoursOnStatus?: number,
     deliveryDateOverride?: string
   ) => {
+    if (!canManageTasks || !currentUser) {
+      openModal("Access Denied", "Only admin/super user can update workflow status.", "error");
+      return;
+    }
+
     const target = tasks.find((task) => task.id === taskId);
     if (!target) return;
     const isRollback = isRollbackToClientReview(target.status, nextStatus);
@@ -230,9 +331,7 @@ export default function HomePage() {
           isRollback
             ? undefined
             : nextStatus === "Confirmed"
-            ? deliveryDateOverride || task.deliveryDate
-            : nextStatus === "Approved"
-              ? task.deliveryDate
+              ? deliveryDateOverride || task.deliveryDate
               : task.deliveryDate;
 
         const updated: ProjectTask = {
@@ -261,7 +360,26 @@ export default function HomePage() {
         return applyStatusMetadata(updated, nextStatus, effectiveStatusDate);
       });
 
-      persist(next);
+      persistTasks(next);
+
+      const currentMeta = taskMetaById[taskId];
+      if (currentMeta) {
+        const nextMeta = isCurrentSuperUser
+          ? decideTaskApproval(currentMeta, currentUser, true, "Workflow updated by super user")
+          : {
+              ...currentMeta,
+              approvalStatus: "pending" as const,
+              decisionNote: undefined,
+              decidedByUserId: undefined,
+              decidedAt: undefined,
+              updatedAt: new Date().toISOString()
+            };
+        persistTaskMeta({
+          ...taskMetaById,
+          [taskId]: nextMeta
+        });
+      }
+
       openModal("Status Updated", "Request status has been updated.", "success");
     };
 
@@ -302,6 +420,11 @@ export default function HomePage() {
       reason?: string;
     }
   ) => {
+    if (!canManageTasks || !currentUser) {
+      openModal("Access Denied", "Only admin/super user can update hours.", "error");
+      return;
+    }
+
     if (payload.estimatedHours < 0 || payload.loggedHours < 0) {
       openModal("Invalid Hours", "Hours cannot be negative.", "error");
       return;
@@ -344,7 +467,7 @@ export default function HomePage() {
       };
     });
 
-    persist(next);
+    persistTasks(next);
     openModal("Hours Updated", "Estimated/logged hours were saved successfully.", "success");
   };
 
@@ -368,9 +491,64 @@ export default function HomePage() {
       handoverDate?: string;
     }
   ) => {
-    const statusIndex = (status: TaskStatus) => STATUSES.indexOf(status);
+    if (!currentUser) {
+      openModal("Access Denied", "Please login first.", "error");
+      return;
+    }
+
     const target = tasks.find((task) => task.id === taskId);
     if (!target) return;
+
+    const targetMeta = taskMetaById[taskId];
+    if (currentUser.role === "client" && targetMeta?.ownerUserId !== currentUser.id) {
+      openModal("Access Denied", "You can edit only your own tasks.", "error");
+      return;
+    }
+
+    if (currentUser.role === "client") {
+      const nowIso = new Date().toISOString();
+      const next = tasks.map((task) => {
+        if (task.id !== taskId) return task;
+
+        return {
+          ...task,
+          title: payload.title,
+          clientName: payload.clientName,
+          requestedDate: payload.requestedDate,
+          changePoints: payload.changePoints,
+          description: payload.changePoints.join(" | "),
+          updatedAt: nowIso,
+          history: [
+            ...task.history,
+            {
+              id: createId(),
+              status: task.status,
+              changedAt: nowIso,
+              note: "Client edited request and submitted for admin approval"
+            }
+          ]
+        };
+      });
+
+      persistTasks(next);
+      if (targetMeta) {
+        persistTaskMeta({
+          ...taskMetaById,
+          [taskId]: {
+            ...targetMeta,
+            approvalStatus: "pending",
+            decisionNote: undefined,
+            decidedByUserId: undefined,
+            decidedAt: undefined,
+            updatedAt: nowIso
+          }
+        });
+      }
+      openModal("Submitted", "Changes submitted. Waiting for admin approval.", "success");
+      return;
+    }
+
+    const statusIndex = (status: TaskStatus) => STATUSES.indexOf(status);
     const isRollback = isRollbackToClientReview(target.status, payload.status);
 
     if (!canTransition(target.status, payload.status)) {
@@ -465,18 +643,48 @@ export default function HomePage() {
       return applyStatusMetadata(updated, payload.status, statusDate);
     });
 
-    persist(next);
+    persistTasks(next);
+
+    const existingMeta = taskMetaById[taskId];
+    if (existingMeta) {
+      const nextMeta = isCurrentSuperUser
+        ? decideTaskApproval(existingMeta, currentUser, true, "Reviewed and saved by super user")
+        : {
+            ...existingMeta,
+            approvalStatus: "pending" as const,
+            decisionNote: undefined,
+            decidedByUserId: undefined,
+            decidedAt: undefined,
+            updatedAt: new Date().toISOString()
+          };
+      persistTaskMeta({
+        ...taskMetaById,
+        [taskId]: nextMeta
+      });
+    }
+
     openModal("Request Updated", "Request details were updated successfully.", "success");
   };
 
   const requestDeleteTask = (taskId: string) => {
-    const next = tasks.filter((task) => task.id !== taskId);
-    persist(next);
+    if (!canManageTasks) {
+      openModal("Access Denied", "Only admin/super user can delete requests.", "error");
+      return;
+    }
+
+    const nextTasks = tasks.filter((task) => task.id !== taskId);
+    persistTasks(nextTasks);
+
+    const nextMeta = { ...taskMetaById };
+    delete nextMeta[taskId];
+    persistTaskMeta(nextMeta);
+
     openModal("Deleted", "Request has been deleted.", "success");
   };
 
   const handleExport = () => {
-    const blob = new Blob([exportTasks(tasks)], { type: "application/json" });
+    const source = canManageTasks ? tasks : visibleTasks;
+    const blob = new Blob([exportTasks(source)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -486,15 +694,29 @@ export default function HomePage() {
   };
 
   const handleImportClick = () => {
+    if (!canManageTasks) {
+      openModal("Access Denied", "Only admin/super user can import data.", "error");
+      return;
+    }
+
     fileInputRef.current?.click();
   };
 
   const handleImportFile = async (file?: File) => {
+    if (!canManageTasks) {
+      openModal("Access Denied", "Only admin/super user can import data.", "error");
+      return;
+    }
+
     if (!file) return;
     const text = await file.text();
     try {
       const parsed = importTasks(text);
-      persist(parsed);
+      persistTasks(parsed);
+
+      const synced = ensureTaskMetaSync(parsed, currentUser, taskMetaById);
+      persistTaskMeta(synced.next);
+
       openModal("Import Complete", "JSON data imported successfully.", "success");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not import JSON";
@@ -502,17 +724,256 @@ export default function HomePage() {
     }
   };
 
+  const handleUserDecision = async (userId: string, approve: boolean) => {
+    if (!currentUser || !isCurrentSuperUser) {
+      openModal("Access Denied", "Only super user can approve/reject users.", "error");
+      return;
+    }
+    const result = await decideUserApproval({ actor: currentUser, userId, approve });
+    if (!result.ok) {
+      openModal("Approval Failed", result.message, "error");
+      return;
+    }
+
+    setUsers(result.users);
+    openModal("User Updated", result.message, "success");
+  };
+
+  const handleTaskDecision = (taskId: string, approve: boolean) => {
+    if (!currentUser || !isCurrentSuperUser) {
+      openModal("Access Denied", "Only super user can approve/reject tasks.", "error");
+      return;
+    }
+
+    const targetMeta = taskMetaById[taskId];
+    if (!targetMeta) {
+      openModal("Not Found", "Task metadata not found.", "error");
+      return;
+    }
+
+    const nextMeta = {
+      ...taskMetaById,
+      [taskId]: decideTaskApproval(
+        targetMeta,
+        currentUser,
+        approve,
+        approve ? "Task approved by admin" : "Task rejected by admin"
+      )
+    };
+
+    persistTaskMeta(nextMeta);
+
+    if (!approve) {
+      const nowIso = new Date().toISOString();
+      const nextTasks = tasks.map((task) => {
+        if (task.id !== taskId) return task;
+        return {
+          ...task,
+          history: [
+            ...task.history,
+            {
+              id: createId(),
+              status: task.status,
+              changedAt: nowIso,
+              note: "Task rejected by admin"
+            }
+          ],
+          updatedAt: nowIso
+        };
+      });
+      persistTasks(nextTasks);
+    }
+
+    openModal("Task Decision Saved", approve ? "Task approved successfully." : "Task rejected successfully.", "success");
+  };
+
+  const handleLoginSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const result = await loginUser(loginValues);
+    if (!result.ok) {
+      openModal("Login Failed", result.message, "error");
+      return;
+    }
+
+    setCurrentUser(result.user);
+    void refreshUsers();
+    setLoginValues({ email: "", password: "" });
+
+    const synced = ensureTaskMetaSync(tasks, result.user, taskMetaById);
+    if (synced.changed) {
+      persistTaskMeta(synced.next);
+    }
+
+    openModal("Login Success", `Welcome, ${result.user.name}.`, "success");
+  };
+
+  const handleRegisterSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const result = await registerUser(registerValues);
+    if (!result.ok) {
+      openModal("Registration Failed", result.message, "error");
+      return;
+    }
+
+    const nextUsers = await refreshUsers();
+
+    if (result.user.status === "approved") {
+      setCurrentUser(result.user);
+      const synced = ensureTaskMetaSync(tasks, result.user, taskMetaById);
+      if (synced.changed) {
+        persistTaskMeta(synced.next);
+      }
+    }
+
+    setRegisterValues({ name: "", email: "", password: "", role: "client" });
+    setAuthTab("login");
+
+    const adminCount = nextUsers.filter(
+      (user) => (user.role === "admin" || user.role === "super_user") && user.status === "approved"
+    ).length;
+    openModal(
+      "Registration Submitted",
+      adminCount === 0
+        ? "First account must be admin. Register an admin first."
+        : result.message,
+      "success"
+    );
+  };
+
+  const handleLogout = () => {
+    logoutUser();
+    setCurrentUser(null);
+    setPendingConfirmedUpdate(null);
+    setConfirmedDeliveryDate("");
+    openModal("Logged Out", "You have been logged out.", "info");
+  };
+
+  if (!currentUser) {
+    return (
+      <main className="page auth-page">
+        <section className="card stack">
+          <h1>Project Tracker</h1>
+          <p className="muted">Register as Admin or Client. New accounts need admin approval (except first bootstrap admin).</p>
+
+          <div className="tab-header">
+            <button
+              type="button"
+              className={authTab === "login" ? "tab-btn active" : "tab-btn"}
+              onClick={() => setAuthTab("login")}
+            >
+              Login
+            </button>
+            <button
+              type="button"
+              className={authTab === "register" ? "tab-btn active" : "tab-btn"}
+              onClick={() => setAuthTab("register")}
+            >
+              Register
+            </button>
+          </div>
+
+          {authTab === "login" ? (
+            <form className="stack" onSubmit={handleLoginSubmit}>
+              <label>
+                Email
+                <input
+                  type="email"
+                  value={loginValues.email}
+                  onChange={(e) => setLoginValues((prev) => ({ ...prev, email: e.target.value }))}
+                />
+              </label>
+              <label>
+                Password
+                <input
+                  type="password"
+                  value={loginValues.password}
+                  onChange={(e) => setLoginValues((prev) => ({ ...prev, password: e.target.value }))}
+                />
+              </label>
+              <div>
+                <button type="submit">Login</button>
+              </div>
+            </form>
+          ) : (
+            <form className="stack" onSubmit={handleRegisterSubmit}>
+              <div className="grid two">
+                <label>
+                  Name
+                  <input
+                    value={registerValues.name}
+                    onChange={(e) => setRegisterValues((prev) => ({ ...prev, name: e.target.value }))}
+                  />
+                </label>
+                <label>
+                  Email
+                  <input
+                    type="email"
+                    value={registerValues.email}
+                    onChange={(e) => setRegisterValues((prev) => ({ ...prev, email: e.target.value }))}
+                  />
+                </label>
+              </div>
+              <div className="grid two">
+                <label>
+                  Password
+                  <input
+                    type="password"
+                    value={registerValues.password}
+                    onChange={(e) => setRegisterValues((prev) => ({ ...prev, password: e.target.value }))}
+                  />
+                </label>
+                <label>
+                  Register As
+                  <select
+                    value={registerValues.role}
+                    onChange={(e) => setRegisterValues((prev) => ({ ...prev, role: e.target.value as UserRole }))}
+                  >
+                    <option value="admin">Admin</option>
+                    <option value="client">Client</option>
+                  </select>
+                </label>
+              </div>
+              <div>
+                <button type="submit">Submit Registration</button>
+              </div>
+            </form>
+          )}
+        </section>
+
+        <PopupModal
+          open={modalState.open}
+          title={modalState.title}
+          message={modalState.message}
+          variant={modalState.variant}
+          onClose={closeModal}
+          onConfirm={modalState.onConfirm}
+          confirmLabel={modalState.variant === "confirm" ? "Delete" : "OK"}
+        />
+      </main>
+    );
+  }
+
   return (
     <main className="page dashboard-shell">
       <aside className="dashboard-sidebar card">
         <div className="brand-panel">
           <p className="brand-title">PTA Console</p>
-          <small>Retro Admin Mode</small>
+          <small>
+            {isCurrentSuperUser
+              ? "Super User Mode"
+              : currentUser.role === "admin"
+                ? "Admin Mode"
+                : "Client Mode"}
+          </small>
         </div>
         <div className="stack">
           <div className="sidebar-metric">
+            <small>Logged User</small>
+            <strong>{currentUser.name}</strong>
+          </div>
+          <div className="sidebar-metric">
             <small>Total Requests</small>
-            <strong>{tasks.length}</strong>
+            <strong>{visibleTasks.length}</strong>
           </div>
           <div className="sidebar-metric">
             <small>Pending Work</small>
@@ -525,8 +986,16 @@ export default function HomePage() {
         </div>
         <div className="sidebar-actions stack">
           <button onClick={handleExport}>Export JSON</button>
-          <button className="secondary" onClick={handleImportClick}>
+          <button className="secondary" onClick={handleImportClick} disabled={!canManageTasks}>
             Import JSON
+          </button>
+          {isCurrentSuperUser ? (
+            <Link href="/super/users" className="button-link secondary-link">
+              Super Users Page
+            </Link>
+          ) : null}
+          <button className="secondary" onClick={handleLogout}>
+            Logout
           </button>
           <input
             ref={fileInputRef}
@@ -541,8 +1010,14 @@ export default function HomePage() {
       <section className="dashboard-main stack">
         <section className="hero card">
           <div className="hero-copy">
-            <h1>Project Tracker Agent</h1>
-            <p>Track project changes date-wise and move requests through your client approval workflow.</p>
+            <h1>Project Tracker</h1>
+            <p>
+              {isCurrentSuperUser
+                ? "Super user can approve/reject users, approve tasks, and delete any admin/user."
+                : currentUser.role === "admin" || currentUser.role === "super_user"
+                  ? "Manage workflow and requests. Super user handles user/task approvals."
+                  : "Create and edit your requests. Admin will approve final task changes."}
+            </p>
           </div>
           <div className="status-lamp">
             <span className="lamp online" />
@@ -550,10 +1025,73 @@ export default function HomePage() {
           </div>
         </section>
 
+        {isCurrentSuperUser ? (
+          <section className="approval-grid">
+            <div className="card stack">
+              <h2>User Approval Queue</h2>
+              {pendingUsers.length === 0 ? (
+                <p className="muted">No pending users.</p>
+              ) : (
+                <div className="stack">
+                  {pendingUsers.map((user) => (
+                    <div key={user.id} className="approval-item">
+                      <div>
+                        <strong>{user.name}</strong>
+                        <div className="muted">{user.email}</div>
+                        <div className="muted">Role: {user.role}</div>
+                      </div>
+                      <div className="row gap">
+                        <button type="button" onClick={() => handleUserDecision(user.id, true)}>
+                          Approve
+                        </button>
+                        <button type="button" className="danger" onClick={() => handleUserDecision(user.id, false)}>
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="card stack">
+              <h2>Task Approval Queue</h2>
+              {pendingTaskApprovals.length === 0 ? (
+                <p className="muted">No pending task approvals.</p>
+              ) : (
+                <div className="stack">
+                  {pendingTaskApprovals.map((task) => {
+                    const ownerId = taskMetaById[task.id]?.ownerUserId;
+                    const owner = users.find((user) => user.id === ownerId);
+
+                    return (
+                      <div key={task.id} className="approval-item">
+                        <div>
+                          <strong>{task.title}</strong>
+                          <div className="muted">Owner: {owner?.name || "Unknown"}</div>
+                          <div className="muted">Status: {task.status}</div>
+                        </div>
+                        <div className="row gap">
+                          <button type="button" onClick={() => handleTaskDecision(task.id, true)}>
+                            Approve
+                          </button>
+                          <button type="button" className="danger" onClick={() => handleTaskDecision(task.id, false)}>
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </section>
+        ) : null}
+
         <section className="kpi-grid">
           <div className="card kpi">
             <small>Total Requests</small>
-            <h2>{tasks.length}</h2>
+            <h2>{visibleTasks.length}</h2>
           </div>
           <div className="card kpi">
             <small>Estimated Hours</small>
@@ -606,7 +1144,9 @@ export default function HomePage() {
             <div className="stack">
               <TaskFilters filters={filters} onChange={setFilters} />
               <TaskList
-                tasks={filtered}
+                tasks={visibleTasks}
+                viewerRole={currentUser.role}
+                approvalByTaskId={approvalByTaskId}
                 onTaskUpdate={updateTask}
                 onRequestDelete={requestDeleteTask}
                 onNotify={openModal}

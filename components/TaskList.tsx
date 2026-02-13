@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import PopupModal from "@/components/PopupModal";
 import { formatShortDate } from "@/lib/date";
-import { STATUSES, type ProjectTask, type TaskStatus } from "@/lib/types";
+import { STATUSES, type TaskApprovalStatus, type ProjectTask, type TaskStatus, type UserRole } from "@/lib/types";
 
 type EditPayload = {
   title: string;
@@ -26,12 +26,28 @@ type EditPayload = {
 
 type Props = {
   tasks: ProjectTask[];
+  viewerRole: UserRole;
+  approvalByTaskId: Record<string, TaskApprovalStatus>;
   onTaskUpdate: (taskId: string, payload: EditPayload) => void;
   onRequestDelete: (taskId: string) => void;
   onNotify: (title: string, message: string, variant?: "info" | "success" | "error") => void;
 };
 
-export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotify }: Props) {
+function approvalLabel(status: TaskApprovalStatus | undefined) {
+  if (status === "approved") return "Admin Approved";
+  if (status === "rejected") return "Admin Rejected";
+  return "Pending Admin";
+}
+
+export default function TaskList({
+  tasks,
+  viewerRole,
+  approvalByTaskId,
+  onTaskUpdate,
+  onRequestDelete,
+  onNotify
+}: Props) {
+  const isClientViewer = viewerRole === "client";
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
 
   const [editTitleByTask, setEditTitleByTask] = useState<Record<string, string>>({});
@@ -107,20 +123,20 @@ export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotif
       clientName: (editClientByTask[task.id] ?? task.clientName ?? "").trim() || undefined,
       requestedDate: editDateByTask[task.id] ?? task.requestedDate,
       changePoints: nextPoints,
-      status: selectedStatus,
-      statusDate: (editStatusDateByTask[task.id] ?? "").trim() || undefined,
-      estimatedHours: nextEstimated,
-      loggedHours: nextLogged,
-      hourlyRate: nextRate,
-      hourReason: (editHourReasonByTask[task.id] ?? "").trim() || undefined,
-      deliveryDate: (editDeliveryByTask[task.id] ?? "").trim() || undefined,
-      confirmedDate: (editConfirmedByTask[task.id] ?? "").trim() || undefined,
-      approvedDate: (editApprovedByTask[task.id] ?? "").trim() || undefined,
-      completedDate: (editCompletedByTask[task.id] ?? "").trim() || undefined,
-      handoverDate: (editHandoverByTask[task.id] ?? "").trim() || undefined
+      status: isClientViewer ? task.status : selectedStatus,
+      statusDate: isClientViewer ? undefined : (editStatusDateByTask[task.id] ?? "").trim() || undefined,
+      estimatedHours: isClientViewer ? task.estimatedHours : nextEstimated,
+      loggedHours: isClientViewer ? task.loggedHours : nextLogged,
+      hourlyRate: isClientViewer ? task.hourlyRate : nextRate,
+      hourReason: isClientViewer ? undefined : (editHourReasonByTask[task.id] ?? "").trim() || undefined,
+      deliveryDate: isClientViewer ? task.deliveryDate : (editDeliveryByTask[task.id] ?? "").trim() || undefined,
+      confirmedDate: isClientViewer ? task.confirmedDate : (editConfirmedByTask[task.id] ?? "").trim() || undefined,
+      approvedDate: isClientViewer ? task.approvedDate : (editApprovedByTask[task.id] ?? "").trim() || undefined,
+      completedDate: isClientViewer ? task.completedDate : (editCompletedByTask[task.id] ?? "").trim() || undefined,
+      handoverDate: isClientViewer ? task.handoverDate : (editHandoverByTask[task.id] ?? "").trim() || undefined
     };
 
-    if (isRollbackToClientReview(task.status, selectedStatus) && !payload.hourReason) {
+    if (!isClientViewer && isRollbackToClientReview(task.status, selectedStatus) && !payload.hourReason) {
       setRollbackReason("");
       setPendingRollback({ taskId: task.id, payload });
       return;
@@ -161,6 +177,7 @@ export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotif
               <th>Client</th>
               <th>Dates</th>
               <th>Status</th>
+              <th>Approval</th>
               <th>Hours</th>
               <th>Actions</th>
             </tr>
@@ -179,8 +196,8 @@ export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotif
               const canEditHandoverDate = selectedStatusIndex >= STATUSES.indexOf("Handover");
 
               return (
-                <>
-                  <tr key={task.id}>
+                <Fragment key={task.id}>
+                  <tr>
                     <td>
                       <div className="list-title">{task.title}</div>
                       <div className="list-sub">{task.changePoints.length} point(s)</div>
@@ -196,6 +213,11 @@ export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotif
                         {task.status}
                       </span>
                     </td>
+                    <td>
+                      <span className="badge" data-approval={approvalByTaskId[task.id] || "pending"}>
+                        {approvalLabel(approvalByTaskId[task.id])}
+                      </span>
+                    </td>
                     <td className="compact-cell">
                       <div>E: {task.estimatedHours}h</div>
                       <div>L: {task.loggedHours}h</div>
@@ -209,18 +231,20 @@ export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotif
                         <button type="button" className="secondary" onClick={() => setEditConfirmTask(task)}>
                           Edit
                         </button>
-                        <button type="button" className="danger" onClick={() => setDeleteConfirmStepOneTaskId(task.id)}>
-                          Delete
-                        </button>
+                        {!isClientViewer ? (
+                          <button type="button" className="danger" onClick={() => setDeleteConfirmStepOneTaskId(task.id)}>
+                            Delete
+                          </button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
 
                   {isEditing ? (
-                    <tr key={`${task.id}-edit`}>
-                      <td colSpan={6}>
+                    <tr>
+                      <td colSpan={7}>
                         <div className="edit-panel stack">
-                          <h3>Edit Request</h3>
+                          <h3>{isClientViewer ? "Edit Request (Pending Admin Approval)" : "Edit Request"}</h3>
 
                           <div className="grid three">
                             <label>
@@ -247,115 +271,123 @@ export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotif
                             </label>
                           </div>
 
-                          <div className="grid five">
-                            <label>
-                              Workflow Status
-                              <select
-                                value={selectedStatus}
-                                onChange={(e) => setEditStatusByTask((prev) => ({ ...prev, [task.id]: e.target.value as TaskStatus }))}
-                              >
-                                {STATUSES.map((status) => (
-                                  <option key={status} value={status}>
-                                    {status}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              Status Date
-                              <input
-                                type="date"
-                                value={editStatusDateByTask[task.id] ?? ""}
-                                onChange={(e) => setEditStatusDateByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                              />
-                            </label>
-                            <label>
-                              Estimated Hours
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.5"
-                                value={editEstimatedByTask[task.id] ?? String(task.estimatedHours)}
-                                onChange={(e) => setEditEstimatedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                              />
-                            </label>
-                            <label>
-                              Logged Hours
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.5"
-                                value={editLoggedByTask[task.id] ?? String(task.loggedHours)}
-                                onChange={(e) => setEditLoggedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                              />
-                            </label>
-                            <label>
-                              Hourly Rate
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={editRateByTask[task.id] ?? String(task.hourlyRate ?? "")}
-                                onChange={(e) => setEditRateByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                              />
-                            </label>
-                          </div>
+                          {!isClientViewer ? (
+                            <>
+                              <div className="grid five">
+                                <label>
+                                  Workflow Status
+                                  <select
+                                    value={selectedStatus}
+                                    onChange={(e) => setEditStatusByTask((prev) => ({ ...prev, [task.id]: e.target.value as TaskStatus }))}
+                                  >
+                                    {STATUSES.map((status) => (
+                                      <option key={status} value={status}>
+                                        {status}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label>
+                                  Status Date
+                                  <input
+                                    type="date"
+                                    value={editStatusDateByTask[task.id] ?? ""}
+                                    onChange={(e) => setEditStatusDateByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  />
+                                </label>
+                                <label>
+                                  Estimated Hours
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.5"
+                                    value={editEstimatedByTask[task.id] ?? String(task.estimatedHours)}
+                                    onChange={(e) => setEditEstimatedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  />
+                                </label>
+                                <label>
+                                  Logged Hours
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.5"
+                                    value={editLoggedByTask[task.id] ?? String(task.loggedHours)}
+                                    onChange={(e) => setEditLoggedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  />
+                                </label>
+                                <label>
+                                  Hourly Rate
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={editRateByTask[task.id] ?? String(task.hourlyRate ?? "")}
+                                    onChange={(e) => setEditRateByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  />
+                                </label>
+                              </div>
 
-                          <label>
-                            Hours Update Reason
-                            <input
-                              value={editHourReasonByTask[task.id] ?? ""}
-                              onChange={(e) => setEditHourReasonByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                              placeholder="Optional reason"
-                            />
-                          </label>
+                              <label>
+                                Hours Update Reason
+                                <input
+                                  value={editHourReasonByTask[task.id] ?? ""}
+                                  onChange={(e) => setEditHourReasonByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  placeholder="Optional reason"
+                                />
+                              </label>
 
-                          <div className="grid five">
-                            <label>
-                              Delivery Date
-                              <input
-                                type="date"
-                                value={editDeliveryByTask[task.id] ?? task.deliveryDate ?? ""}
-                                onChange={(e) => setEditDeliveryByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                              />
-                            </label>
-                            <label>
-                              Confirmed Date
-                              <input
-                                type="date"
-                                value={editConfirmedByTask[task.id] ?? task.confirmedDate ?? ""}
-                                disabled={!canEditConfirmedDate}
-                                onChange={(e) => setEditConfirmedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                              />
-                            </label>
-                            <label>
-                              Approved Date
-                              <input
-                                type="date"
-                                value={editApprovedByTask[task.id] ?? task.approvedDate ?? ""}
-                                disabled={!canEditApprovedDate}
-                                onChange={(e) => setEditApprovedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                              />
-                            </label>
-                            <label>
-                              Completed Date
-                              <input
-                                type="date"
-                                value={editCompletedByTask[task.id] ?? task.completedDate ?? ""}
-                                disabled={!canEditCompletedDate}
-                                onChange={(e) => setEditCompletedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                              />
-                            </label>
-                            <label>
-                              Handover Date
-                              <input
-                                type="date"
-                                value={editHandoverByTask[task.id] ?? task.handoverDate ?? ""}
-                                disabled={!canEditHandoverDate}
-                                onChange={(e) => setEditHandoverByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                              />
-                            </label>
-                          </div>
+                              <div className="grid five">
+                                <label>
+                                  Delivery Date
+                                  <input
+                                    type="date"
+                                    value={editDeliveryByTask[task.id] ?? task.deliveryDate ?? ""}
+                                    onChange={(e) => setEditDeliveryByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  />
+                                </label>
+                                <label>
+                                  Confirmed Date
+                                  <input
+                                    type="date"
+                                    value={editConfirmedByTask[task.id] ?? task.confirmedDate ?? ""}
+                                    disabled={!canEditConfirmedDate}
+                                    onChange={(e) => setEditConfirmedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  />
+                                </label>
+                                <label>
+                                  Approved Date
+                                  <input
+                                    type="date"
+                                    value={editApprovedByTask[task.id] ?? task.approvedDate ?? ""}
+                                    disabled={!canEditApprovedDate}
+                                    onChange={(e) => setEditApprovedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  />
+                                </label>
+                                <label>
+                                  Completed Date
+                                  <input
+                                    type="date"
+                                    value={editCompletedByTask[task.id] ?? task.completedDate ?? ""}
+                                    disabled={!canEditCompletedDate}
+                                    onChange={(e) => setEditCompletedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  />
+                                </label>
+                                <label>
+                                  Handover Date
+                                  <input
+                                    type="date"
+                                    value={editHandoverByTask[task.id] ?? task.handoverDate ?? ""}
+                                    disabled={!canEditHandoverDate}
+                                    onChange={(e) => setEditHandoverByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  />
+                                </label>
+                              </div>
+                            </>
+                          ) : (
+                            <small className="muted">
+                              Client edits are saved as pending. Admin must approve before final confirmation.
+                            </small>
+                          )}
 
                           <div className="stack">
                             <small>Change Points</small>
@@ -405,7 +437,7 @@ export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotif
                               type="button"
                               onClick={() => handleSaveTask(task, selectedStatus)}
                             >
-                              Save Request
+                              {isClientViewer ? "Submit For Approval" : "Save Request"}
                             </button>
                             <button type="button" className="secondary" onClick={() => setEditingTaskId(null)}>
                               Cancel
@@ -415,7 +447,7 @@ export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotif
                       </td>
                     </tr>
                   ) : null}
-                </>
+                </Fragment>
               );
             })}
           </tbody>
@@ -470,7 +502,7 @@ export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotif
       />
 
       <PopupModal
-        open={deleteConfirmStepOneTaskId !== null}
+        open={!isClientViewer && deleteConfirmStepOneTaskId !== null}
         title="Delete Request"
         message="Are you sure you want to delete this request?"
         variant="confirm"
@@ -484,7 +516,7 @@ export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotif
       />
 
       <PopupModal
-        open={deleteConfirmStepTwoTaskId !== null}
+        open={!isClientViewer && deleteConfirmStepTwoTaskId !== null}
         title="Final Confirmation"
         message="Please confirm again. This delete action cannot be undone."
         variant="confirm"

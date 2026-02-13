@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Project Tracker Agent",
+  title: "Project Tracker",
   description: "Track client change requests and delivery status",
   icons: {
     icon: "/icon.svg",

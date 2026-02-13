@@ -9,6 +9,37 @@ export const STATUSES = [
 ] as const;
 
 export type TaskStatus = (typeof STATUSES)[number];
+export const USER_ROLES = ["super_user", "admin", "client"] as const;
+export type UserRole = (typeof USER_ROLES)[number];
+
+export const USER_APPROVAL_STATUSES = ["pending", "approved", "rejected"] as const;
+export type UserApprovalStatus = (typeof USER_APPROVAL_STATUSES)[number];
+
+export const TASK_APPROVAL_STATUSES = ["pending", "approved", "rejected"] as const;
+export type TaskApprovalStatus = (typeof TASK_APPROVAL_STATUSES)[number];
+
+export type AppUser = {
+  id: string;
+  name: string;
+  email: string;
+  password: string;
+  role: UserRole;
+  status: UserApprovalStatus;
+  createdAt: string;
+  approvedByUserId?: string;
+  approvedAt?: string;
+  rejectionReason?: string;
+};
+
+export type TaskAccessMeta = {
+  taskId: string;
+  ownerUserId?: string;
+  approvalStatus: TaskApprovalStatus;
+  decisionNote?: string;
+  decidedByUserId?: string;
+  decidedAt?: string;
+  updatedAt: string;
+};
 
 export type TaskHistory = {
   id: string;
