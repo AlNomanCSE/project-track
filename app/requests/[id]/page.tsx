@@ -11,7 +11,20 @@ export default function RequestDetailsPage() {
   const [tasks, setTasks] = useState<ProjectTask[]>([]);
 
   useEffect(() => {
-    setTasks(taskRepository.read());
+    let active = true;
+
+    const loadTasks = async () => {
+      const next = await taskRepository.read();
+      if (active) {
+        setTasks(next);
+      }
+    };
+
+    void loadTasks();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const task = useMemo(() => {

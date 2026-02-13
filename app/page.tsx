@@ -60,7 +60,7 @@ export default function HomePage() {
 
   const persist = (next: ProjectTask[]) => {
     setTasks(next);
-    taskRepository.write(next);
+    void taskRepository.write(next);
   };
 
   const openModal = (
@@ -77,7 +77,20 @@ export default function HomePage() {
   };
 
   useEffect(() => {
-    setTasks(taskRepository.read());
+    let active = true;
+
+    const loadTasks = async () => {
+      const initialTasks = await taskRepository.read();
+      if (active) {
+        setTasks(initialTasks);
+      }
+    };
+
+    void loadTasks();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
