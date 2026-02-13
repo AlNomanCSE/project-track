@@ -58,8 +58,7 @@ Then open `http://localhost:3000`.
 
 ## Notes
 
-- Current RLS policies in `supabase/schema.sql` allow anonymous read/write so the frontend can sync directly.
-- For production, replace anon-wide policies with authenticated user-based policies.
-- Super user is fixed by email in `/lib/super-user.ts` (`abdullahalnomancse@gmail.com`).
-- Only this super user can approve/reject users, approve/reject tasks, and delete admin/client users.
+- Current RLS policies in `supabase/schema.sql` require authenticated access.
+- Super user access is role-based (`role = 'super_user'`).
+- Only super user can approve/reject users, approve/reject tasks, and delete admin/client users.
 - Super user management page: `/super/users`.

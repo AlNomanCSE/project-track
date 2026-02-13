@@ -22,7 +22,6 @@ export type AppUser = {
   id: string;
   name: string;
   email: string;
-  password: string;
   role: UserRole;
   status: UserApprovalStatus;
   createdAt: string;

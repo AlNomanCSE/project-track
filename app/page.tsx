@@ -828,14 +828,9 @@ export default function HomePage() {
     setRegisterValues({ name: "", email: "", password: "", role: "client" });
     setAuthTab("login");
 
-    const adminCount = nextUsers.filter(
-      (user) => (user.role === "admin" || user.role === "super_user") && user.status === "approved"
-    ).length;
     openModal(
       "Registration Submitted",
-      adminCount === 0
-        ? "First account must be admin. Register an admin first."
-        : result.message,
+      result.message,
       "success"
     );
   };

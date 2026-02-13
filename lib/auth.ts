@@ -2,13 +2,10 @@ import { supabase } from "@/lib/supabase";
 import { isSuperUser } from "@/lib/super-user";
 import type { AppUser, UserRole } from "@/lib/types";
 
-const SESSION_KEY = "pta-session-v1";
-
 type DbUserRow = {
   id: string;
   name: string;
   email: string;
-  password: string;
   role: UserRole;
   status: AppUser["status"];
   created_at: string;
@@ -26,7 +23,6 @@ function rowToUser(row: DbUserRow): AppUser {
     id: row.id,
     name: row.name,
     email: row.email,
-    password: row.password,
     role: row.role,
     status: row.status,
     createdAt: row.created_at,
@@ -36,34 +32,21 @@ function rowToUser(row: DbUserRow): AppUser {
   };
 }
 
-function userToRow(user: AppUser): DbUserRow {
-  return {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    password: user.password,
-    role: user.role,
-    status: user.status,
-    created_at: user.createdAt,
-    approved_by_user_id: user.approvedByUserId ?? null,
-    approved_at: user.approvedAt ?? null,
-    rejection_reason: user.rejectionReason ?? null
-  };
+function sanitizeRole(value: unknown): UserRole {
+  return value === "super_user" || value === "admin" || value === "client" ? value : "client";
 }
 
-export function getSessionUserId(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(SESSION_KEY);
-}
+async function readUserByEmail(email: string): Promise<AppUser | null> {
+  if (!supabase) return null;
 
-export function setSessionUserId(userId: string) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(SESSION_KEY, userId);
-}
+  const { data, error } = await supabase
+    .from("app_users")
+    .select("id, name, email, role, status, created_at, approved_by_user_id, approved_at, rejection_reason")
+    .eq("email", email)
+    .maybeSingle();
 
-export function clearSession() {
-  if (typeof window === "undefined") return;
-  window.localStorage.removeItem(SESSION_KEY);
+  if (error || !data) return null;
+  return rowToUser(data as DbUserRow);
 }
 
 export async function readUsers(): Promise<AppUser[]> {
@@ -71,7 +54,7 @@ export async function readUsers(): Promise<AppUser[]> {
 
   const { data, error } = await supabase
     .from("app_users")
-    .select("id, name, email, password, role, status, created_at, approved_by_user_id, approved_at, rejection_reason")
+    .select("id, name, email, role, status, created_at, approved_by_user_id, approved_at, rejection_reason")
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -83,13 +66,17 @@ export async function readUsers(): Promise<AppUser[]> {
 }
 
 export async function readSessionUser(users?: AppUser[]): Promise<AppUser | null> {
-  const sessionUserId = getSessionUserId();
-  if (!sessionUserId) return null;
+  if (!supabase) return null;
 
+  const { data, error } = await supabase.auth.getUser();
+  if (error || !data.user?.email) return null;
+
+  const sessionEmail = data.user.email.trim().toLowerCase();
   const list = users ?? (await readUsers());
-  const sessionUser = list.find((user) => user.id === sessionUserId) ?? null;
+  const sessionUser = list.find((user) => user.email.trim().toLowerCase() === sessionEmail) ?? null;
+
   if (!sessionUser || sessionUser.status !== "approved") {
-    clearSession();
+    await supabase.auth.signOut();
     return null;
   }
 
@@ -112,44 +99,37 @@ export async function registerUser(input: {
 
   if (!name) return { ok: false, message: "Name is required." };
   if (!email) return { ok: false, message: "Email is required." };
-  if (!password || password.length < 4) {
-    return { ok: false, message: "Password must be at least 4 characters." };
+  if (!password || password.length < 6) {
+    return { ok: false, message: "Password must be at least 6 characters." };
   }
 
-  const users = await readUsers();
-  if (users.some((user) => user.email === email)) {
-    return { ok: false, message: "This email is already registered." };
-  }
+  const { error: signUpError } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: { name, role: input.role }
+    }
+  });
 
-  if (users.length === 0 && input.role !== "admin") {
-    return { ok: false, message: "First account must be an admin account." };
+  if (signUpError) {
+    return { ok: false, message: `Auth registration failed: ${signUpError.message}` };
   }
 
   const nowIso = new Date().toISOString();
-  const isBootstrapAdmin = users.length === 0 && input.role === "admin";
-
-  const user: AppUser = {
+  const appUser: AppUser = {
     id: createId(),
     name,
     email,
-    password,
     role: input.role,
-    status: isBootstrapAdmin ? "approved" : "pending",
-    createdAt: nowIso,
-    approvedAt: isBootstrapAdmin ? nowIso : undefined
+    status: "pending",
+    createdAt: nowIso
   };
 
-  const { error } = await supabase.from("app_users").insert(userToRow(user));
-  if (error) {
-    return { ok: false, message: `Registration failed: ${error.message}` };
-  }
-
-  if (isBootstrapAdmin) {
-    setSessionUserId(user.id);
-    return { ok: true, user, message: "Bootstrap admin created and logged in." };
-  }
-
-  return { ok: true, user, message: "Registration submitted. Wait for admin approval." };
+  return {
+    ok: true,
+    user: appUser,
+    message: "Registration submitted. Please confirm email, then login for approval."
+  };
 }
 
 export async function loginUser(input: {
@@ -167,40 +147,69 @@ export async function loginUser(input: {
     return { ok: false, message: "Email and password are required." };
   }
 
-  const { data, error } = await supabase
-    .from("app_users")
-    .select("id, name, email, password, role, status, created_at, approved_by_user_id, approved_at, rejection_reason")
-    .eq("email", email)
-    .maybeSingle();
-
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) {
-    return { ok: false, message: `Login failed: ${error.message}` };
+    return { ok: false, message: `Auth login failed: ${error.message}` };
   }
 
-  if (!data) {
-    return { ok: false, message: "Invalid email or password." };
+  if (!data.user?.email) {
+    return { ok: false, message: "Auth login failed: user email missing in session response." };
   }
 
-  const user = rowToUser(data as DbUserRow);
+  const appUser = await readUserByEmail(data.user.email.toLowerCase());
+  let resolvedUser = appUser;
 
-  if (user.password !== password) {
-    return { ok: false, message: "Invalid email or password." };
+  if (!resolvedUser) {
+    const nowIso = new Date().toISOString();
+    const metaName = typeof data.user.user_metadata?.name === "string" ? data.user.user_metadata.name : "";
+    const roleFromMeta = sanitizeRole(data.user.user_metadata?.role);
+    const status: AppUser["status"] =
+      roleFromMeta === "super_user" && data.user.email.toLowerCase() === "abdullahalnomancse@gmail.com"
+        ? "approved"
+        : "pending";
+
+    const insertPayload = {
+      id: createId(),
+      name: metaName.trim() || data.user.email.split("@")[0],
+      email: data.user.email.toLowerCase(),
+      role: roleFromMeta,
+      status,
+      approved_by_user_id: null,
+      approved_at: status === "approved" ? nowIso : null,
+      rejection_reason: null,
+      created_at: nowIso,
+      updated_at: nowIso
+    };
+
+    const { error: insertError } = await supabase.from("app_users").insert(insertPayload);
+    if (insertError) {
+      await supabase.auth.signOut();
+      return { ok: false, message: `Profile creation failed: ${insertError.message}` };
+    }
+
+    resolvedUser = await readUserByEmail(data.user.email.toLowerCase());
+    if (!resolvedUser) {
+      await supabase.auth.signOut();
+      return { ok: false, message: "User profile not found after creation." };
+    }
   }
 
-  if (user.status === "pending") {
-    return { ok: false, message: "Account is pending admin approval." };
+  if (resolvedUser.status === "pending") {
+    await supabase.auth.signOut();
+    return { ok: false, message: "Account is pending super user approval." };
   }
 
-  if (user.status === "rejected") {
-    return { ok: false, message: "Account was rejected by admin." };
+  if (resolvedUser.status === "rejected") {
+    await supabase.auth.signOut();
+    return { ok: false, message: "Account was rejected by super user." };
   }
 
-  setSessionUserId(user.id);
-  return { ok: true, user };
+  return { ok: true, user: resolvedUser };
 }
 
 export function logoutUser() {
-  clearSession();
+  if (!supabase) return;
+  void supabase.auth.signOut();
 }
 
 export async function decideUserApproval(input: {
@@ -237,7 +246,7 @@ export async function decideUserApproval(input: {
       status: nextStatus,
       approved_by_user_id: input.actor.id,
       approved_at: nowIso,
-      rejection_reason: input.approve ? null : (input.reason || "Rejected by admin")
+      rejection_reason: input.approve ? null : (input.reason || "Rejected by super user")
     })
     .eq("id", input.userId);
 

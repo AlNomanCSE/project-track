@@ -124,7 +124,7 @@ export function ensureTaskMetaSync(tasks: ProjectTask[], currentUser: AppUser | 
 }
 
 export function getVisibleTasks(tasks: ProjectTask[], metaById: TaskMetaById, user: AppUser) {
-  if (user.role === "admin") return tasks;
+  if (user.role === "admin" || user.role === "super_user") return tasks;
   return tasks.filter((task) => metaById[task.id]?.ownerUserId === user.id);
 }
 
@@ -134,7 +134,7 @@ export function metaForNewTask(taskId: string, user: AppUser): TaskAccessMeta {
   return {
     taskId,
     ownerUserId: user.id,
-    approvalStatus: user.role === "admin" ? "approved" : "pending",
+    approvalStatus: user.role === "admin" || user.role === "super_user" ? "approved" : "pending",
     updatedAt: nowIso
   };
 }
