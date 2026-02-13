@@ -3,7 +3,11 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Project Tracker Agent",
-  description: "Track client change requests and delivery status"
+  description: "Track client change requests and delivery status",
+  icons: {
+    icon: "/icon.svg",
+    shortcut: "/icon.svg"
+  }
 };
 
 export default function RootLayout({
