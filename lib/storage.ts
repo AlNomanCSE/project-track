@@ -3,6 +3,8 @@ import { STATUSES, type ProjectTask, type TaskStatus } from "@/lib/types";
 
 const STORAGE_KEY = "project-tracker-agent-v1";
 const SUPABASE_TASKS_TABLE = "project_tasks";
+const SUPABASE_EVENTS_TABLE = "task_events";
+const SUPABASE_REVISIONS_TABLE = "task_hour_revisions";
 
 type TaskRepository = {
   read: () => Promise<ProjectTask[]>;
@@ -29,8 +31,25 @@ type DbTaskRow = {
   handover_date: string | null;
   created_at: string;
   updated_at: string;
-  history: unknown;
-  hour_revisions: unknown;
+};
+
+type DbEventRow = {
+  id: number;
+  task_id: string;
+  source_event_id: string | null;
+  status: string;
+  note: string | null;
+  changed_at: string;
+};
+
+type DbRevisionRow = {
+  id: number;
+  task_id: string;
+  source_revision_id: string | null;
+  previous_estimated_hours: number;
+  next_estimated_hours: number;
+  reason: string | null;
+  changed_at: string;
 };
 
 const numberOrDefault = (value: unknown, fallback: number): number => {
@@ -152,9 +171,7 @@ const taskToDbRow = (task: ProjectTask): DbTaskRow => ({
   completed_date: task.completedDate ?? null,
   handover_date: task.handoverDate ?? null,
   created_at: task.createdAt,
-  updated_at: task.updatedAt,
-  history: task.history,
-  hour_revisions: task.hourRevisions
+  updated_at: task.updatedAt
 });
 
 class LocalStorageRepository implements TaskRepository {
@@ -186,17 +203,81 @@ class SupabaseTaskRepository implements TaskRepository {
     const local = await this.fallback.read();
     if (!supabase) return local;
 
-    const { data, error } = await supabase
+    const { data: taskRows, error: taskError } = await supabase
       .from(SUPABASE_TASKS_TABLE)
       .select("*")
       .order("requested_date", { ascending: false });
 
-    if (error) {
-      console.warn("Supabase read failed, using local data:", error.message);
+    if (taskError) {
+      console.warn("Supabase task read failed, using local data:", taskError.message);
       return local;
     }
 
-    const normalized = (data ?? []).map(normalizeTask).filter((task): task is ProjectTask => task !== null);
+    const tasks = (taskRows ?? []) as DbTaskRow[];
+    if (tasks.length === 0) {
+      await this.fallback.write([]);
+      return [];
+    }
+
+    const taskIds = tasks.map((task) => task.id);
+
+    const [{ data: eventRows, error: eventError }, { data: revisionRows, error: revisionError }] = await Promise.all([
+      supabase
+        .from(SUPABASE_EVENTS_TABLE)
+        .select("id, task_id, source_event_id, status, note, changed_at")
+        .in("task_id", taskIds)
+        .order("changed_at", { ascending: true }),
+      supabase
+        .from(SUPABASE_REVISIONS_TABLE)
+        .select("id, task_id, source_revision_id, previous_estimated_hours, next_estimated_hours, reason, changed_at")
+        .in("task_id", taskIds)
+        .order("changed_at", { ascending: true })
+    ]);
+
+    if (eventError || revisionError) {
+      console.warn(
+        "Supabase related history read failed, using local data:",
+        eventError?.message || revisionError?.message || "unknown"
+      );
+      return local;
+    }
+
+    const eventsByTask = new Map<string, DbEventRow[]>();
+    for (const event of ((eventRows ?? []) as DbEventRow[])) {
+      const list = eventsByTask.get(event.task_id) ?? [];
+      list.push(event);
+      eventsByTask.set(event.task_id, list);
+    }
+
+    const revisionsByTask = new Map<string, DbRevisionRow[]>();
+    for (const revision of ((revisionRows ?? []) as DbRevisionRow[])) {
+      const list = revisionsByTask.get(revision.task_id) ?? [];
+      list.push(revision);
+      revisionsByTask.set(revision.task_id, list);
+    }
+
+    const normalized = tasks
+      .map((task) => {
+        const raw = {
+          ...task,
+          history: (eventsByTask.get(task.id) ?? []).map((event) => ({
+            id: event.source_event_id || `${task.id}-event-${event.id}`,
+            status: event.status,
+            note: event.note || undefined,
+            changedAt: event.changed_at
+          })),
+          hourRevisions: (revisionsByTask.get(task.id) ?? []).map((revision) => ({
+            id: revision.source_revision_id || `${task.id}-rev-${revision.id}`,
+            previousEstimatedHours: revision.previous_estimated_hours,
+            nextEstimatedHours: revision.next_estimated_hours,
+            reason: revision.reason || undefined,
+            changedAt: revision.changed_at
+          }))
+        };
+        return normalizeTask(raw);
+      })
+      .filter((task): task is ProjectTask => task !== null);
+
     await this.fallback.write(normalized);
     return normalized;
   }
@@ -207,12 +288,12 @@ class SupabaseTaskRepository implements TaskRepository {
 
     const rows = tasks.map(taskToDbRow);
 
-    const { error: upsertError } = await supabase
+    const { error: upsertTaskError } = await supabase
       .from(SUPABASE_TASKS_TABLE)
       .upsert(rows, { onConflict: "id" });
 
-    if (upsertError) {
-      console.warn("Supabase write failed, local data kept:", upsertError.message);
+    if (upsertTaskError) {
+      console.warn("Supabase task write failed, local data kept:", upsertTaskError.message);
       return;
     }
 
@@ -221,7 +302,7 @@ class SupabaseTaskRepository implements TaskRepository {
       .select("id");
 
     if (existingError) {
-      console.warn("Supabase cleanup read failed:", existingError.message);
+      console.warn("Supabase task cleanup read failed:", existingError.message);
       return;
     }
 
@@ -230,15 +311,76 @@ class SupabaseTaskRepository implements TaskRepository {
       .map((row) => row.id)
       .filter((id) => !nextIds.has(id));
 
-    if (toDelete.length === 0) return;
+    if (toDelete.length > 0) {
+      const { error: deleteTaskError } = await supabase
+        .from(SUPABASE_TASKS_TABLE)
+        .delete()
+        .in("id", toDelete);
 
-    const { error: deleteError } = await supabase
-      .from(SUPABASE_TASKS_TABLE)
+      if (deleteTaskError) {
+        console.warn("Supabase task delete sync failed:", deleteTaskError.message);
+      }
+    }
+
+    const currentTaskIds = tasks.map((task) => task.id);
+    if (currentTaskIds.length === 0) return;
+
+    const { error: clearEventsError } = await supabase
+      .from(SUPABASE_EVENTS_TABLE)
       .delete()
-      .in("id", toDelete);
+      .in("task_id", currentTaskIds);
 
-    if (deleteError) {
-      console.warn("Supabase delete sync failed:", deleteError.message);
+    if (clearEventsError) {
+      console.warn("Supabase event cleanup failed:", clearEventsError.message);
+      return;
+    }
+
+    const { error: clearRevisionsError } = await supabase
+      .from(SUPABASE_REVISIONS_TABLE)
+      .delete()
+      .in("task_id", currentTaskIds);
+
+    if (clearRevisionsError) {
+      console.warn("Supabase revision cleanup failed:", clearRevisionsError.message);
+      return;
+    }
+
+    const eventRows = tasks.flatMap((task) =>
+      task.history.map((event) => ({
+        task_id: task.id,
+        source_event_id: event.id,
+        status: event.status,
+        note: event.note ?? null,
+        changed_at: event.changedAt,
+        event_type: event.note?.toLowerCase().includes("rollback") ? "rollback" : "status_change"
+      }))
+    );
+
+    if (eventRows.length > 0) {
+      const { error: insertEventsError } = await supabase.from(SUPABASE_EVENTS_TABLE).insert(eventRows);
+      if (insertEventsError) {
+        console.warn("Supabase event insert failed:", insertEventsError.message);
+      }
+    }
+
+    const revisionRows = tasks.flatMap((task) =>
+      task.hourRevisions.map((revision) => ({
+        task_id: task.id,
+        source_revision_id: revision.id,
+        previous_estimated_hours: revision.previousEstimatedHours,
+        next_estimated_hours: revision.nextEstimatedHours,
+        reason: revision.reason ?? null,
+        changed_at: revision.changedAt
+      }))
+    );
+
+    if (revisionRows.length > 0) {
+      const { error: insertRevisionsError } = await supabase
+        .from(SUPABASE_REVISIONS_TABLE)
+        .insert(revisionRows);
+      if (insertRevisionsError) {
+        console.warn("Supabase revision insert failed:", insertRevisionsError.message);
+      }
     }
   }
 }

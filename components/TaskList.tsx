@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import PopupModal from "@/components/PopupModal";
+import { formatShortDate } from "@/lib/date";
 import { STATUSES, type ProjectTask, type TaskStatus } from "@/lib/types";
 
 type EditPayload = {
@@ -10,6 +11,12 @@ type EditPayload = {
   clientName?: string;
   requestedDate: string;
   changePoints: string[];
+  status: TaskStatus;
+  statusDate?: string;
+  estimatedHours: number;
+  loggedHours: number;
+  hourlyRate?: number;
+  hourReason?: string;
   deliveryDate?: string;
   confirmedDate?: string;
   approvedDate?: string;
@@ -19,42 +26,37 @@ type EditPayload = {
 
 type Props = {
   tasks: ProjectTask[];
-  onStatusUpdate: (
-    taskId: string,
-    nextStatus: TaskStatus,
-    note: string,
-    statusDate?: string,
-    estimatedHoursOnStatus?: number
-  ) => void;
-  onHoursUpdate: (taskId: string, payload: { estimatedHours: number; loggedHours: number; hourlyRate?: number; reason?: string }) => void;
   onTaskUpdate: (taskId: string, payload: EditPayload) => void;
   onRequestDelete: (taskId: string) => void;
   onNotify: (title: string, message: string, variant?: "info" | "success" | "error") => void;
 };
 
-export default function TaskList({ tasks, onStatusUpdate, onHoursUpdate, onTaskUpdate, onRequestDelete, onNotify }: Props) {
-  const [noteByTask, setNoteByTask] = useState<Record<string, string>>({});
-  const [statusDateByTask, setStatusDateByTask] = useState<Record<string, string>>({});
-  const [nextStatusByTask, setNextStatusByTask] = useState<Record<string, TaskStatus>>({});
-
-  const [estimatedByTask, setEstimatedByTask] = useState<Record<string, string>>({});
-  const [loggedByTask, setLoggedByTask] = useState<Record<string, string>>({});
-  const [rateByTask, setRateByTask] = useState<Record<string, string>>({});
-  const [reEstimateReasonByTask, setReEstimateReasonByTask] = useState<Record<string, string>>({});
-
+export default function TaskList({ tasks, onTaskUpdate, onRequestDelete, onNotify }: Props) {
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+
   const [editTitleByTask, setEditTitleByTask] = useState<Record<string, string>>({});
   const [editClientByTask, setEditClientByTask] = useState<Record<string, string>>({});
   const [editDateByTask, setEditDateByTask] = useState<Record<string, string>>({});
   const [editPointsByTask, setEditPointsByTask] = useState<Record<string, string[]>>({});
+
+  const [editStatusByTask, setEditStatusByTask] = useState<Record<string, TaskStatus>>({});
+  const [editStatusDateByTask, setEditStatusDateByTask] = useState<Record<string, string>>({});
+  const [editEstimatedByTask, setEditEstimatedByTask] = useState<Record<string, string>>({});
+  const [editLoggedByTask, setEditLoggedByTask] = useState<Record<string, string>>({});
+  const [editRateByTask, setEditRateByTask] = useState<Record<string, string>>({});
+  const [editHourReasonByTask, setEditHourReasonByTask] = useState<Record<string, string>>({});
+
   const [editDeliveryByTask, setEditDeliveryByTask] = useState<Record<string, string>>({});
   const [editConfirmedByTask, setEditConfirmedByTask] = useState<Record<string, string>>({});
   const [editApprovedByTask, setEditApprovedByTask] = useState<Record<string, string>>({});
   const [editCompletedByTask, setEditCompletedByTask] = useState<Record<string, string>>({});
   const [editHandoverByTask, setEditHandoverByTask] = useState<Record<string, string>>({});
+
   const [editConfirmTask, setEditConfirmTask] = useState<ProjectTask | null>(null);
   const [deleteConfirmStepOneTaskId, setDeleteConfirmStepOneTaskId] = useState<string | null>(null);
   const [deleteConfirmStepTwoTaskId, setDeleteConfirmStepTwoTaskId] = useState<string | null>(null);
+  const [pendingRollback, setPendingRollback] = useState<{ taskId: string; payload: EditPayload } | null>(null);
+  const [rollbackReason, setRollbackReason] = useState("");
 
   if (!tasks.length) {
     return <div className="card">No requests found for this filter.</div>;
@@ -71,12 +73,77 @@ export default function TaskList({ tasks, onStatusUpdate, onHoursUpdate, onTaskU
     return Number.isFinite(n) && n >= 0 ? n : fallback;
   };
 
+  const isRollbackToClientReview = (from: TaskStatus, to: TaskStatus): boolean => {
+    const fromIndex = STATUSES.indexOf(from);
+    const confirmedIndex = STATUSES.indexOf("Confirmed");
+    return to === "Client Review" && fromIndex >= confirmedIndex;
+  };
+
+  const handleSaveTask = (task: ProjectTask, selectedStatus: TaskStatus) => {
+    const nextTitle = (editTitleByTask[task.id] ?? task.title).trim();
+    const nextPoints = (editPointsByTask[task.id] ?? task.changePoints).map((p) => p.trim()).filter(Boolean);
+
+    if (!nextTitle) {
+      onNotify("Validation Error", "Title is required.", "error");
+      return;
+    }
+    if (nextPoints.length === 0) {
+      onNotify("Validation Error", "At least one change point is required.", "error");
+      return;
+    }
+
+    const nextEstimated = parseNumber(
+      editEstimatedByTask[task.id] ?? String(task.estimatedHours),
+      task.estimatedHours
+    );
+    const nextLogged = parseNumber(editLoggedByTask[task.id] ?? String(task.loggedHours), task.loggedHours);
+    const nextRate = parseOptionalNumber(
+      editRateByTask[task.id] ?? String(task.hourlyRate ?? ""),
+      task.hourlyRate
+    );
+
+    const payload: EditPayload = {
+      title: nextTitle,
+      clientName: (editClientByTask[task.id] ?? task.clientName ?? "").trim() || undefined,
+      requestedDate: editDateByTask[task.id] ?? task.requestedDate,
+      changePoints: nextPoints,
+      status: selectedStatus,
+      statusDate: (editStatusDateByTask[task.id] ?? "").trim() || undefined,
+      estimatedHours: nextEstimated,
+      loggedHours: nextLogged,
+      hourlyRate: nextRate,
+      hourReason: (editHourReasonByTask[task.id] ?? "").trim() || undefined,
+      deliveryDate: (editDeliveryByTask[task.id] ?? "").trim() || undefined,
+      confirmedDate: (editConfirmedByTask[task.id] ?? "").trim() || undefined,
+      approvedDate: (editApprovedByTask[task.id] ?? "").trim() || undefined,
+      completedDate: (editCompletedByTask[task.id] ?? "").trim() || undefined,
+      handoverDate: (editHandoverByTask[task.id] ?? "").trim() || undefined
+    };
+
+    if (isRollbackToClientReview(task.status, selectedStatus) && !payload.hourReason) {
+      setRollbackReason("");
+      setPendingRollback({ taskId: task.id, payload });
+      return;
+    }
+
+    onTaskUpdate(task.id, payload);
+    setEditingTaskId(null);
+  };
+
   const startEdit = (task: ProjectTask) => {
     setEditingTaskId(task.id);
     setEditTitleByTask((prev) => ({ ...prev, [task.id]: task.title }));
     setEditClientByTask((prev) => ({ ...prev, [task.id]: task.clientName || "" }));
     setEditDateByTask((prev) => ({ ...prev, [task.id]: task.requestedDate }));
     setEditPointsByTask((prev) => ({ ...prev, [task.id]: task.changePoints.length ? [...task.changePoints] : [""] }));
+
+    setEditStatusByTask((prev) => ({ ...prev, [task.id]: task.status }));
+    setEditStatusDateByTask((prev) => ({ ...prev, [task.id]: "" }));
+    setEditEstimatedByTask((prev) => ({ ...prev, [task.id]: String(task.estimatedHours) }));
+    setEditLoggedByTask((prev) => ({ ...prev, [task.id]: String(task.loggedHours) }));
+    setEditRateByTask((prev) => ({ ...prev, [task.id]: task.hourlyRate === undefined ? "" : String(task.hourlyRate) }));
+    setEditHourReasonByTask((prev) => ({ ...prev, [task.id]: "" }));
+
     setEditDeliveryByTask((prev) => ({ ...prev, [task.id]: task.deliveryDate || "" }));
     setEditConfirmedByTask((prev) => ({ ...prev, [task.id]: task.confirmedDate || "" }));
     setEditApprovedByTask((prev) => ({ ...prev, [task.id]: task.approvedDate || "" }));
@@ -85,180 +152,164 @@ export default function TaskList({ tasks, onStatusUpdate, onHoursUpdate, onTaskU
   };
 
   return (
-    <div className="task-list stack">
-      {tasks.map((task) => {
-        const estimatedHours = parseNumber(estimatedByTask[task.id] ?? String(task.estimatedHours), task.estimatedHours);
-        const loggedHours = parseNumber(loggedByTask[task.id] ?? String(task.loggedHours), task.loggedHours);
-        const remainingHours = Math.max(estimatedHours - loggedHours, 0);
-        const isEditing = editingTaskId === task.id;
-        const points = editPointsByTask[task.id] ?? [""];
+    <div className="card table-card">
+      <div className="list-table-wrap">
+        <table className="list-table">
+          <thead>
+            <tr>
+              <th>Request</th>
+              <th>Client</th>
+              <th>Dates</th>
+              <th>Status</th>
+              <th>Hours</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tasks.map((task) => {
+              const isEditing = editingTaskId === task.id;
+              const points = editPointsByTask[task.id] ?? [""];
+              const remainingHours = Math.max(task.estimatedHours - task.loggedHours, 0);
 
-        return (
-          <article className="card request-card" key={task.id}>
-            <div className="row between gap request-head">
-              <div className="stack tight">
-                <strong>{task.title}</strong>
-                <span className="muted">{task.changePoints.length} point(s)</span>
-              </div>
-              <span className="badge" data-status={task.status}>
-                {task.status}
-              </span>
-            </div>
+              const selectedStatus = editStatusByTask[task.id] ?? task.status;
+              const selectedStatusIndex = STATUSES.indexOf(selectedStatus);
+              const canEditConfirmedDate = selectedStatusIndex >= STATUSES.indexOf("Confirmed");
+              const canEditApprovedDate = selectedStatusIndex >= STATUSES.indexOf("Approved");
+              const canEditCompletedDate = selectedStatusIndex >= STATUSES.indexOf("Completed");
+              const canEditHandoverDate = selectedStatusIndex >= STATUSES.indexOf("Handover");
 
-            <div className="request-sections">
-              <section className="request-block">
-                <small>Client & Dates</small>
-                <div className="stack tight">
-                  <span>Client: {task.clientName || "-"}</span>
-                  <span>Req: {task.requestedDate}</span>
-                  <span>Delivery: {task.deliveryDate || "-"}</span>
-                  <span>Confirmed: {task.confirmedDate || "-"}</span>
-                  <span>Approved: {task.approvedDate || "-"}</span>
-                  <span>Completed: {task.completedDate || "-"}</span>
-                  <span>Handover: {task.handoverDate || "-"}</span>
-                </div>
-              </section>
+              return (
+                <>
+                  <tr key={task.id}>
+                    <td>
+                      <div className="list-title">{task.title}</div>
+                      <div className="list-sub">{task.changePoints.length} point(s)</div>
+                    </td>
+                    <td>{task.clientName || "-"}</td>
+                    <td className="compact-cell">
+                      <div>Req: {formatShortDate(task.requestedDate)}</div>
+                      <div>Delivery: {formatShortDate(task.deliveryDate)}</div>
+                      <div>Completed: {formatShortDate(task.completedDate)}</div>
+                    </td>
+                    <td>
+                      <span className="badge" data-status={task.status}>
+                        {task.status}
+                      </span>
+                    </td>
+                    <td className="compact-cell">
+                      <div>E: {task.estimatedHours}h</div>
+                      <div>L: {task.loggedHours}h</div>
+                      <div>R: {remainingHours}h</div>
+                    </td>
+                    <td>
+                      <div className="action-stack">
+                        <Link href={`/requests/${task.id}`} className="button-link">
+                          Details
+                        </Link>
+                        <button type="button" className="secondary" onClick={() => setEditConfirmTask(task)}>
+                          Edit
+                        </button>
+                        <button type="button" className="danger" onClick={() => setDeleteConfirmStepOneTaskId(task.id)}>
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
 
-              <section className="request-block">
-                <small>Workflow</small>
-                <div className="stack tight">
-                  <span className="muted">Estimated hours must be set before `Confirmed` or later.</span>
-                  <select
-                    value={nextStatusByTask[task.id] ?? task.status}
-                    onChange={(e) => setNextStatusByTask((p) => ({ ...p, [task.id]: e.target.value as TaskStatus }))}
-                  >
-                    {STATUSES.map((status) => (
-                      <option key={status} value={status}>
-                        {status}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    value={noteByTask[task.id] || ""}
-                    onChange={(e) => setNoteByTask((p) => ({ ...p, [task.id]: e.target.value }))}
-                    placeholder="Status note"
-                  />
-                  <label className="inline-label">
-                    Status Date
-                    <input
-                      type="date"
-                      value={statusDateByTask[task.id] || ""}
-                      onChange={(e) => setStatusDateByTask((p) => ({ ...p, [task.id]: e.target.value }))}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() =>
-                    onStatusUpdate(
-                        task.id,
-                        nextStatusByTask[task.id] ?? task.status,
-                        noteByTask[task.id] || "",
-                        statusDateByTask[task.id] || undefined,
-                        parseNumber(estimatedByTask[task.id] ?? String(task.estimatedHours), task.estimatedHours)
-                      )
-                    }
-                  >
-                    Update Status
-                  </button>
-                </div>
-              </section>
+                  {isEditing ? (
+                    <tr key={`${task.id}-edit`}>
+                      <td colSpan={6}>
+                        <div className="edit-panel stack">
+                          <h3>Edit Request</h3>
 
-              <section className="request-block">
-                <small>Hours</small>
-                <div className="stack tight">
-                  <div className="hours-line">E: {task.estimatedHours}h | L: {task.loggedHours}h | R: {remainingHours}h</div>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.5"
-                    value={estimatedByTask[task.id] ?? String(task.estimatedHours)}
-                    onChange={(e) => setEstimatedByTask((p) => ({ ...p, [task.id]: e.target.value }))}
-                    placeholder="Estimated"
-                  />
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.5"
-                    value={loggedByTask[task.id] ?? String(task.loggedHours)}
-                    onChange={(e) => setLoggedByTask((p) => ({ ...p, [task.id]: e.target.value }))}
-                    placeholder="Logged"
-                  />
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={rateByTask[task.id] ?? String(task.hourlyRate ?? "")}
-                    onChange={(e) => setRateByTask((p) => ({ ...p, [task.id]: e.target.value }))}
-                    placeholder="Hourly rate"
-                  />
-                  <input
-                    value={reEstimateReasonByTask[task.id] || ""}
-                    onChange={(e) => setReEstimateReasonByTask((p) => ({ ...p, [task.id]: e.target.value }))}
-                    placeholder="Re-estimation reason"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextEstimated = parseNumber(estimatedByTask[task.id] ?? String(task.estimatedHours), task.estimatedHours);
-                      const nextLogged = parseNumber(loggedByTask[task.id] ?? String(task.loggedHours), task.loggedHours);
-                      const nextRate = parseOptionalNumber(rateByTask[task.id] ?? String(task.hourlyRate ?? ""), task.hourlyRate);
-
-                      onHoursUpdate(task.id, {
-                        estimatedHours: nextEstimated,
-                        loggedHours: nextLogged,
-                        hourlyRate: nextRate,
-                        reason: reEstimateReasonByTask[task.id] || undefined
-                      });
-                    }}
-                  >
-                    Save Hours
-                  </button>
-                </div>
-              </section>
-
-              <section className="request-block">
-                <small>Actions</small>
-                <div className="stack tight">
-                  <Link href={`/requests/${task.id}`} className="button-link">
-                    View Details
-                  </Link>
-                  <button type="button" className="secondary" onClick={() => setEditConfirmTask(task)}>
-                    Edit
-                  </button>
-                  <button type="button" className="danger" onClick={() => setDeleteConfirmStepOneTaskId(task.id)}>
-                    Delete
-                  </button>
-                </div>
-              </section>
-            </div>
-
-            {isEditing ? (
-              <div className="edit-panel stack">
-                <h3>Edit Request</h3>
                           <div className="grid three">
                             <label>
                               Title
                               <input
-                      value={editTitleByTask[task.id] ?? task.title}
-                      onChange={(e) => setEditTitleByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                    />
-                  </label>
-                  <label>
-                    Client
-                    <input
-                      value={editClientByTask[task.id] ?? task.clientName ?? ""}
-                      onChange={(e) => setEditClientByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                    />
-                  </label>
-                  <label>
-                    Request Date
-                    <input
-                      type="date"
-                      value={editDateByTask[task.id] ?? task.requestedDate}
-                      onChange={(e) => setEditDateByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                value={editTitleByTask[task.id] ?? task.title}
+                                onChange={(e) => setEditTitleByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                              />
+                            </label>
+                            <label>
+                              Client
+                              <input
+                                value={editClientByTask[task.id] ?? task.clientName ?? ""}
+                                onChange={(e) => setEditClientByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                              />
+                            </label>
+                            <label>
+                              Request Date
+                              <input
+                                type="date"
+                                value={editDateByTask[task.id] ?? task.requestedDate}
+                                onChange={(e) => setEditDateByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
                               />
                             </label>
                           </div>
+
+                          <div className="grid five">
+                            <label>
+                              Workflow Status
+                              <select
+                                value={selectedStatus}
+                                onChange={(e) => setEditStatusByTask((prev) => ({ ...prev, [task.id]: e.target.value as TaskStatus }))}
+                              >
+                                {STATUSES.map((status) => (
+                                  <option key={status} value={status}>
+                                    {status}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Status Date
+                              <input
+                                type="date"
+                                value={editStatusDateByTask[task.id] ?? ""}
+                                onChange={(e) => setEditStatusDateByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                              />
+                            </label>
+                            <label>
+                              Estimated Hours
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.5"
+                                value={editEstimatedByTask[task.id] ?? String(task.estimatedHours)}
+                                onChange={(e) => setEditEstimatedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                              />
+                            </label>
+                            <label>
+                              Logged Hours
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.5"
+                                value={editLoggedByTask[task.id] ?? String(task.loggedHours)}
+                                onChange={(e) => setEditLoggedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                              />
+                            </label>
+                            <label>
+                              Hourly Rate
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={editRateByTask[task.id] ?? String(task.hourlyRate ?? "")}
+                                onChange={(e) => setEditRateByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                              />
+                            </label>
+                          </div>
+
+                          <label>
+                            Hours Update Reason
+                            <input
+                              value={editHourReasonByTask[task.id] ?? ""}
+                              onChange={(e) => setEditHourReasonByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                              placeholder="Optional reason"
+                            />
+                          </label>
+
                           <div className="grid five">
                             <label>
                               Delivery Date
@@ -273,6 +324,7 @@ export default function TaskList({ tasks, onStatusUpdate, onHoursUpdate, onTaskU
                               <input
                                 type="date"
                                 value={editConfirmedByTask[task.id] ?? task.confirmedDate ?? ""}
+                                disabled={!canEditConfirmedDate}
                                 onChange={(e) => setEditConfirmedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
                               />
                             </label>
@@ -281,6 +333,7 @@ export default function TaskList({ tasks, onStatusUpdate, onHoursUpdate, onTaskU
                               <input
                                 type="date"
                                 value={editApprovedByTask[task.id] ?? task.approvedDate ?? ""}
+                                disabled={!canEditApprovedDate}
                                 onChange={(e) => setEditApprovedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
                               />
                             </label>
@@ -289,6 +342,7 @@ export default function TaskList({ tasks, onStatusUpdate, onHoursUpdate, onTaskU
                               <input
                                 type="date"
                                 value={editCompletedByTask[task.id] ?? task.completedDate ?? ""}
+                                disabled={!canEditCompletedDate}
                                 onChange={(e) => setEditCompletedByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
                               />
                             </label>
@@ -297,95 +351,109 @@ export default function TaskList({ tasks, onStatusUpdate, onHoursUpdate, onTaskU
                               <input
                                 type="date"
                                 value={editHandoverByTask[task.id] ?? task.handoverDate ?? ""}
+                                disabled={!canEditHandoverDate}
                                 onChange={(e) => setEditHandoverByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
                               />
                             </label>
                           </div>
 
-                <div className="stack">
-                  <small>Change Points</small>
-                  {points.map((point, idx) => (
-                    <div className="row gap" key={`${task.id}-point-edit-${idx}`}>
-                      <input
-                        value={point}
-                        onChange={(e) =>
-                          setEditPointsByTask((prev) => {
-                            const next = [...(prev[task.id] ?? [""])];
-                            next[idx] = e.target.value;
-                            return { ...prev, [task.id]: next };
-                          })
-                        }
-                      />
-                      {points.length > 1 ? (
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() =>
-                            setEditPointsByTask((prev) => ({
-                              ...prev,
-                              [task.id]: (prev[task.id] ?? [""]).filter((_, i) => i !== idx)
-                            }))
-                          }
-                        >
-                          Remove
-                        </button>
-                      ) : null}
-                    </div>
-                  ))}
-                  <div>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() =>
-                        setEditPointsByTask((prev) => ({ ...prev, [task.id]: [...(prev[task.id] ?? [""]), ""] }))
-                      }
-                    >
-                      + Add Point
-                    </button>
-                  </div>
-                </div>
+                          <div className="stack">
+                            <small>Change Points</small>
+                            {points.map((point, idx) => (
+                              <div className="row gap" key={`${task.id}-point-edit-${idx}`}>
+                                <input
+                                  value={point}
+                                  onChange={(e) =>
+                                    setEditPointsByTask((prev) => {
+                                      const next = [...(prev[task.id] ?? [""])];
+                                      next[idx] = e.target.value;
+                                      return { ...prev, [task.id]: next };
+                                    })
+                                  }
+                                />
+                                {points.length > 1 ? (
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={() =>
+                                      setEditPointsByTask((prev) => ({
+                                        ...prev,
+                                        [task.id]: (prev[task.id] ?? [""]).filter((_, i) => i !== idx)
+                                      }))
+                                    }
+                                  >
+                                    Remove
+                                  </button>
+                                ) : null}
+                              </div>
+                            ))}
+                            <div>
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() =>
+                                  setEditPointsByTask((prev) => ({ ...prev, [task.id]: [...(prev[task.id] ?? [""]), ""] }))
+                                }
+                              >
+                                + Add Point
+                              </button>
+                            </div>
+                          </div>
 
-                <div className="row gap">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextTitle = (editTitleByTask[task.id] ?? task.title).trim();
-                      const nextPoints = (editPointsByTask[task.id] ?? task.changePoints).map((p) => p.trim()).filter(Boolean);
+                          <div className="row gap">
+                            <button
+                              type="button"
+                              onClick={() => handleSaveTask(task, selectedStatus)}
+                            >
+                              Save Request
+                            </button>
+                            <button type="button" className="secondary" onClick={() => setEditingTaskId(null)}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
-                      if (!nextTitle) {
-                        onNotify("Validation Error", "Title is required.", "error");
-                        return;
-                      }
-                      if (nextPoints.length === 0) {
-                        onNotify("Validation Error", "At least one change point is required.", "error");
-                        return;
-                      }
-
-                                onTaskUpdate(task.id, {
-                                  title: nextTitle,
-                                  clientName: (editClientByTask[task.id] ?? task.clientName ?? "").trim() || undefined,
-                                  requestedDate: editDateByTask[task.id] ?? task.requestedDate,
-                                  changePoints: nextPoints,
-                                  deliveryDate: (editDeliveryByTask[task.id] ?? "").trim() || undefined,
-                                  confirmedDate: (editConfirmedByTask[task.id] ?? "").trim() || undefined,
-                                  approvedDate: (editApprovedByTask[task.id] ?? "").trim() || undefined,
-                                  completedDate: (editCompletedByTask[task.id] ?? "").trim() || undefined,
-                                  handoverDate: (editHandoverByTask[task.id] ?? "").trim() || undefined
-                                });
-                      setEditingTaskId(null);
-                    }}
-                  >
-                    Save Request
-                  </button>
-                  <button type="button" className="secondary" onClick={() => setEditingTaskId(null)}>
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </article>
-        );
-      })}
+      <PopupModal
+        open={pendingRollback !== null}
+        title="Rollback Reason Required"
+        message="This status move will rollback workflow to Client Review and reset estimate/dates. Please provide reason."
+        variant="confirm"
+        confirmLabel="Confirm Rollback"
+        confirmDisabled={!rollbackReason.trim()}
+        confirmOrder="confirm-first"
+        onClose={() => {
+          setPendingRollback(null);
+          setRollbackReason("");
+        }}
+        onConfirm={() => {
+          if (!pendingRollback) return;
+          onTaskUpdate(pendingRollback.taskId, {
+            ...pendingRollback.payload,
+            hourReason: rollbackReason.trim()
+          });
+          setEditingTaskId(null);
+          setPendingRollback(null);
+          setRollbackReason("");
+        }}
+      >
+        <label>
+          Rollback Reason
+          <input
+            value={rollbackReason}
+            onChange={(e) => setRollbackReason(e.target.value)}
+            placeholder="Why are you moving this task back to Client Review?"
+          />
+        </label>
+      </PopupModal>
 
       <PopupModal
         open={editConfirmTask !== null}

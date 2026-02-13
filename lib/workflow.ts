@@ -1,14 +1,22 @@
 import { STATUSES, type ProjectTask, type TaskStatus } from "@/lib/types";
 
+function isRollbackToClientReview(from: TaskStatus, to: TaskStatus): boolean {
+  const fromIndex = STATUSES.indexOf(from);
+  const confirmedIndex = STATUSES.indexOf("Confirmed");
+  return to === "Client Review" && fromIndex >= confirmedIndex;
+}
+
 export function canTransition(from: TaskStatus, to: TaskStatus): boolean {
+  if (isRollbackToClientReview(from, to)) return true;
+
   const fromIndex = STATUSES.indexOf(from);
   const toIndex = STATUSES.indexOf(to);
-  return toIndex >= fromIndex;
+  return toIndex === fromIndex || toIndex === fromIndex + 1;
 }
 
 export function applyStatusMetadata(task: ProjectTask, nextStatus: TaskStatus, statusDate?: string): ProjectTask {
-  const nowDate = new Date().toISOString().slice(0, 10);
-  const effectiveDate = statusDate || nowDate;
+  const effectiveDate = statusDate;
+  if (!effectiveDate) return task;
 
   if (nextStatus === "Working On It") {
     task.startDate = effectiveDate;
