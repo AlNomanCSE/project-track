@@ -1,14 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import TaskForm from "@/components/TaskForm";
 import TaskFilters from "@/components/TaskFilters";
 import TaskList from "@/components/TaskList";
 import PopupModal from "@/components/PopupModal";
-import { taskRepository, exportTasks, importTasks } from "@/lib/storage";
+import { taskRepository } from "@/lib/storage";
 import { filterTasks, canTransition, applyStatusMetadata } from "@/lib/workflow";
-import { decideUserApproval, loginUser, logoutUser, readSessionUser, readUsers, registerUser } from "@/lib/auth";
+import { decideUserApproval, deleteUserBySuper, loginUser, logoutUser, readSessionUser, readUsers, registerUser } from "@/lib/auth";
 import {
   decideTaskApproval,
   ensureTaskMetaSync,
@@ -29,6 +29,8 @@ import {
 } from "@/lib/types";
 import { isSuperUser } from "@/lib/super-user";
 
+type AppTheme = "dark" | "light";
+
 function createId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -40,12 +42,11 @@ function isRollbackToClientReview(from: TaskStatus, to: TaskStatus): boolean {
 }
 
 export default function HomePage() {
+  const [theme, setTheme] = useState<AppTheme>("dark");
   const [tasks, setTasks] = useState<ProjectTask[]>([]);
   const [taskMetaById, setTaskMetaById] = useState<TaskMetaById>({});
   const [users, setUsers] = useState<AppUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeTab, setActiveTab] = useState<"add" | "list">("add");
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
 
@@ -143,6 +144,22 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
+    const saved = window.localStorage.getItem("project-tracker-theme");
+    if (saved === "dark" || saved === "light") {
+      setTheme(saved);
+      return;
+    }
+
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    setTheme(prefersDark ? "dark" : "light");
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    window.localStorage.setItem("project-tracker-theme", theme);
+  }, [theme]);
+
+  useEffect(() => {
     const applyFromUrl = () => {
       const params = new URLSearchParams(window.location.search);
       setActiveTab(params.get("tab") === "list" ? "list" : "add");
@@ -175,13 +192,21 @@ export default function HomePage() {
     return map;
   }, [visibleTasks, taskMetaById]);
 
+  const ownerByTaskId = useMemo(() => {
+    const map: Record<string, string | undefined> = {};
+    for (const task of visibleTasks) {
+      map[task.id] = taskMetaById[task.id]?.ownerUserId;
+    }
+    return map;
+  }, [visibleTasks, taskMetaById]);
+
   const pendingUsers = useMemo(
     () => users.filter((user) => user.status === "pending"),
     [users]
   );
 
   const pendingTaskApprovals = useMemo(
-    () => tasks.filter((task) => taskMetaById[task.id]?.approvalStatus === "pending"),
+    () => tasks.filter((task) => (taskMetaById[task.id]?.approvalStatus ?? "pending") === "pending"),
     [tasks, taskMetaById]
   );
 
@@ -246,7 +271,18 @@ export default function HomePage() {
 
     const nextMeta = {
       ...taskMetaById,
-      [task.id]: metaForNewTask(task.id, currentUser)
+      [task.id]:
+        currentUser.role === "client"
+          ? {
+              taskId: task.id,
+              ownerUserId: currentUser.id,
+              approvalStatus: "pending" as const,
+              decisionNote: undefined,
+              decidedByUserId: undefined,
+              decidedAt: undefined,
+              updatedAt: nowIso
+            }
+          : metaForNewTask(task.id, currentUser)
     };
     persistTaskMeta(nextMeta);
 
@@ -274,6 +310,11 @@ export default function HomePage() {
 
     const target = tasks.find((task) => task.id === taskId);
     if (!target) return;
+    const targetMeta = taskMetaById[taskId];
+    if (targetMeta?.ownerUserId !== currentUser.id) {
+      openModal("Access Denied", "You can edit only your own tasks.", "error");
+      return;
+    }
     const isRollback = isRollbackToClientReview(target.status, nextStatus);
 
     if (!canTransition(target.status, nextStatus)) {
@@ -364,16 +405,7 @@ export default function HomePage() {
 
       const currentMeta = taskMetaById[taskId];
       if (currentMeta) {
-        const nextMeta = isCurrentSuperUser
-          ? decideTaskApproval(currentMeta, currentUser, true, "Workflow updated by super user")
-          : {
-              ...currentMeta,
-              approvalStatus: "pending" as const,
-              decisionNote: undefined,
-              decidedByUserId: undefined,
-              decidedAt: undefined,
-              updatedAt: new Date().toISOString()
-            };
+        const nextMeta = decideTaskApproval(currentMeta, currentUser, true, "Workflow updated by manager");
         persistTaskMeta({
           ...taskMetaById,
           [taskId]: nextMeta
@@ -500,7 +532,7 @@ export default function HomePage() {
     if (!target) return;
 
     const targetMeta = taskMetaById[taskId];
-    if (currentUser.role === "client" && targetMeta?.ownerUserId !== currentUser.id) {
+    if (!targetMeta || targetMeta.ownerUserId !== currentUser.id) {
       openModal("Access Denied", "You can edit only your own tasks.", "error");
       return;
     }
@@ -647,16 +679,12 @@ export default function HomePage() {
 
     const existingMeta = taskMetaById[taskId];
     if (existingMeta) {
-      const nextMeta = isCurrentSuperUser
-        ? decideTaskApproval(existingMeta, currentUser, true, "Reviewed and saved by super user")
-        : {
-            ...existingMeta,
-            approvalStatus: "pending" as const,
-            decisionNote: undefined,
-            decidedByUserId: undefined,
-            decidedAt: undefined,
-            updatedAt: new Date().toISOString()
-          };
+      const nextMeta = decideTaskApproval(
+        existingMeta,
+        currentUser,
+        true,
+        currentUser.role === "super_user" ? "Reviewed and saved by super user" : "Reviewed and saved by admin"
+      );
       persistTaskMeta({
         ...taskMetaById,
         [taskId]: nextMeta
@@ -667,8 +695,8 @@ export default function HomePage() {
   };
 
   const requestDeleteTask = (taskId: string) => {
-    if (!canManageTasks) {
-      openModal("Access Denied", "Only admin/super user can delete requests.", "error");
+    if (!currentUser || !isCurrentSuperUser) {
+      openModal("Access Denied", "Only super user can delete requests.", "error");
       return;
     }
 
@@ -680,48 +708,6 @@ export default function HomePage() {
     persistTaskMeta(nextMeta);
 
     openModal("Deleted", "Request has been deleted.", "success");
-  };
-
-  const handleExport = () => {
-    const source = canManageTasks ? tasks : visibleTasks;
-    const blob = new Blob([exportTasks(source)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `project-tracker-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleImportClick = () => {
-    if (!canManageTasks) {
-      openModal("Access Denied", "Only admin/super user can import data.", "error");
-      return;
-    }
-
-    fileInputRef.current?.click();
-  };
-
-  const handleImportFile = async (file?: File) => {
-    if (!canManageTasks) {
-      openModal("Access Denied", "Only admin/super user can import data.", "error");
-      return;
-    }
-
-    if (!file) return;
-    const text = await file.text();
-    try {
-      const parsed = importTasks(text);
-      persistTasks(parsed);
-
-      const synced = ensureTaskMetaSync(parsed, currentUser, taskMetaById);
-      persistTaskMeta(synced.next);
-
-      openModal("Import Complete", "JSON data imported successfully.", "success");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Could not import JSON";
-      openModal("Import Failed", message, "error");
-    }
   };
 
   const handleUserDecision = async (userId: string, approve: boolean) => {
@@ -787,6 +773,22 @@ export default function HomePage() {
     openModal("Task Decision Saved", approve ? "Task approved successfully." : "Task rejected successfully.", "success");
   };
 
+  const handleDeleteUser = async (userId: string) => {
+    if (!currentUser || !isCurrentSuperUser) {
+      openModal("Access Denied", "Only super user can delete users.", "error");
+      return;
+    }
+
+    const result = await deleteUserBySuper({ actor: currentUser, targetUserId: userId });
+    if (!result.ok) {
+      openModal("Delete Failed", result.message, "error");
+      return;
+    }
+
+    setUsers(result.users);
+    openModal("User Deleted", result.message, "success");
+  };
+
   const handleLoginSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const result = await loginUser(loginValues);
@@ -843,10 +845,20 @@ export default function HomePage() {
     openModal("Logged Out", "You have been logged out.", "info");
   };
 
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+  };
+
   if (!currentUser) {
     return (
       <main className="page auth-page">
         <section className="card stack">
+          <div className="row between">
+            <small className="muted">Appearance</small>
+            <button type="button" className="secondary theme-toggle" onClick={toggleTheme}>
+              {theme === "dark" ? "Light Mode" : "Dark Mode"}
+            </button>
+          </div>
           <h1>Project Tracker</h1>
           <p className="muted">Register as Admin or Client. New accounts need admin approval (except first bootstrap admin).</p>
 
@@ -980,10 +992,6 @@ export default function HomePage() {
           </div>
         </div>
         <div className="sidebar-actions stack">
-          <button onClick={handleExport}>Export JSON</button>
-          <button className="secondary" onClick={handleImportClick} disabled={!canManageTasks}>
-            Import JSON
-          </button>
           {isCurrentSuperUser ? (
             <Link href="/super/users" className="button-link secondary-link">
               Super Users Page
@@ -992,13 +1000,6 @@ export default function HomePage() {
           <button className="secondary" onClick={handleLogout}>
             Logout
           </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json"
-            hidden
-            onChange={(e) => handleImportFile(e.target.files?.[0])}
-          />
         </div>
       </aside>
 
@@ -1010,78 +1011,18 @@ export default function HomePage() {
               {isCurrentSuperUser
                 ? "Super user can approve/reject users, approve tasks, and delete any admin/user."
                 : currentUser.role === "admin" || currentUser.role === "super_user"
-                  ? "Manage workflow and requests. Super user handles user/task approvals."
-                  : "Create and edit your requests. Admin will approve final task changes."}
+                  ? "Add your own requests and approve pending client requests."
+                  : "Add requests, view all requests, and edit only your own requests."}
             </p>
           </div>
           <div className="status-lamp">
             <span className="lamp online" />
             <small>System Online</small>
+            <button type="button" className="secondary theme-toggle" onClick={toggleTheme}>
+              {theme === "dark" ? "Light Mode" : "Dark Mode"}
+            </button>
           </div>
         </section>
-
-        {isCurrentSuperUser ? (
-          <section className="approval-grid">
-            <div className="card stack">
-              <h2>User Approval Queue</h2>
-              {pendingUsers.length === 0 ? (
-                <p className="muted">No pending users.</p>
-              ) : (
-                <div className="stack">
-                  {pendingUsers.map((user) => (
-                    <div key={user.id} className="approval-item">
-                      <div>
-                        <strong>{user.name}</strong>
-                        <div className="muted">{user.email}</div>
-                        <div className="muted">Role: {user.role}</div>
-                      </div>
-                      <div className="row gap">
-                        <button type="button" onClick={() => handleUserDecision(user.id, true)}>
-                          Approve
-                        </button>
-                        <button type="button" className="danger" onClick={() => handleUserDecision(user.id, false)}>
-                          Reject
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="card stack">
-              <h2>Task Approval Queue</h2>
-              {pendingTaskApprovals.length === 0 ? (
-                <p className="muted">No pending task approvals.</p>
-              ) : (
-                <div className="stack">
-                  {pendingTaskApprovals.map((task) => {
-                    const ownerId = taskMetaById[task.id]?.ownerUserId;
-                    const owner = users.find((user) => user.id === ownerId);
-
-                    return (
-                      <div key={task.id} className="approval-item">
-                        <div>
-                          <strong>{task.title}</strong>
-                          <div className="muted">Owner: {owner?.name || "Unknown"}</div>
-                          <div className="muted">Status: {task.status}</div>
-                        </div>
-                        <div className="row gap">
-                          <button type="button" onClick={() => handleTaskDecision(task.id, true)}>
-                            Approve
-                          </button>
-                          <button type="button" className="danger" onClick={() => handleTaskDecision(task.id, false)}>
-                            Reject
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </section>
-        ) : null}
 
         <section className="kpi-grid">
           <div className="card kpi">
@@ -1141,6 +1082,8 @@ export default function HomePage() {
               <TaskList
                 tasks={visibleTasks}
                 viewerRole={currentUser.role}
+                viewerUserId={currentUser.id}
+                ownerByTaskId={ownerByTaskId}
                 approvalByTaskId={approvalByTaskId}
                 onTaskUpdate={updateTask}
                 onRequestDelete={requestDeleteTask}

@@ -14,6 +14,22 @@
   --shadow: 0 0 0 1px rgba(0, 0, 0, 0.45), 0 14px 28px rgba(0, 0, 0, 0.45);
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #eef3ee;
+  --bg-soft: #f6faf6;
+  --card: #fdfefd;
+  --card-strong: #f3f9f4;
+  --text: #16211b;
+  --muted: #4c6453;
+  --brand: #e89117;
+  --brand-2: #c26e00;
+  --border: #c7d7cb;
+  --danger: #c74b42;
+  --ok: #2f9951;
+  --shadow: 0 0 0 1px rgba(14, 26, 19, 0.08), 0 10px 22px rgba(17, 33, 23, 0.12);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -425,6 +441,13 @@ button.danger {
 
 .auth-page {
   max-width: 760px;
+  min-height: calc(100dvh - 56px);
+  align-content: center;
+  justify-items: center;
+}
+
+.auth-page > .card {
+  width: min(760px, 100%);
 }
 
 .approval-grid {
@@ -609,6 +632,116 @@ button.danger {
 
 .site-credit a:hover {
   text-decoration: underline;
+}
+
+.theme-toggle {
+  white-space: nowrap;
+}
+
+:root[data-theme="light"] body {
+  background:
+    radial-gradient(circle at 20% 10%, rgba(232, 145, 23, 0.1) 0%, transparent 28%),
+    linear-gradient(130deg, rgba(47, 153, 81, 0.06) 0%, transparent 40%),
+    repeating-linear-gradient(
+      0deg,
+      rgba(237, 243, 238, 0.95) 0,
+      rgba(237, 243, 238, 0.95) 2px,
+      rgba(233, 240, 234, 0.95) 2px,
+      rgba(233, 240, 234, 0.95) 4px
+    ),
+    var(--bg);
+}
+
+:root[data-theme="light"] .brand-panel {
+  background: linear-gradient(160deg, rgba(232, 145, 23, 0.14), rgba(227, 238, 230, 0.9));
+}
+
+:root[data-theme="light"] .brand-title {
+  color: #9b5e00;
+}
+
+:root[data-theme="light"] .sidebar-metric {
+  background: rgba(236, 244, 238, 0.85);
+}
+
+:root[data-theme="light"] .sidebar-metric strong,
+:root[data-theme="light"] .kpi h2,
+:root[data-theme="light"] .status-card h2 {
+  color: #714400;
+}
+
+:root[data-theme="light"] input,
+:root[data-theme="light"] select,
+:root[data-theme="light"] textarea {
+  background: #f8fcf8;
+  color: var(--text);
+}
+
+:root[data-theme="light"] input::placeholder,
+:root[data-theme="light"] textarea::placeholder {
+  color: #708670;
+}
+
+:root[data-theme="light"] button {
+  color: #271701;
+}
+
+:root[data-theme="light"] button.secondary,
+:root[data-theme="light"] .button-link.secondary-link,
+:root[data-theme="light"] .tab-btn {
+  background: #edf5ee;
+}
+
+:root[data-theme="light"] button.danger {
+  color: #320f0d;
+}
+
+:root[data-theme="light"] .badge {
+  color: #835000;
+}
+
+:root[data-theme="light"] .badge[data-status="Working On It"] {
+  color: #235c81;
+}
+
+:root[data-theme="light"] .badge[data-status="Completed"],
+:root[data-theme="light"] .badge[data-status="Handover"],
+:root[data-theme="light"] .badge[data-approval="approved"] {
+  color: #1c7136;
+}
+
+:root[data-theme="light"] .badge[data-approval="rejected"] {
+  color: #8f2f2a;
+}
+
+:root[data-theme="light"] .approval-item,
+:root[data-theme="light"] .edit-panel,
+:root[data-theme="light"] .modal-card {
+  background: #f6fbf7;
+}
+
+:root[data-theme="light"] .list-table th {
+  background: #e8f0ea;
+}
+
+:root[data-theme="light"] .list-table tbody tr:hover {
+  background: rgba(232, 145, 23, 0.08);
+}
+
+:root[data-theme="light"] .modal-backdrop {
+  background: rgba(16, 30, 22, 0.28);
+}
+
+:root[data-theme="light"] .modal-card {
+  box-shadow: 0 18px 36px rgba(20, 39, 26, 0.2);
+}
+
+:root[data-theme="light"] .site-credit {
+  background: rgba(241, 247, 242, 0.92);
+}
+
+:root[data-theme="light"] .site-credit a {
+  color: #9b5e00;
 }
 
 @media (max-width: 1100px) {

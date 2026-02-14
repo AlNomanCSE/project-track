@@ -77,22 +77,6 @@ export default function RequestDetailsPage() {
   }
 
   const meta = taskMetaById[task.id];
-  if (currentUser.role === "client" && meta?.ownerUserId !== currentUser.id) {
-    return (
-      <main className="page">
-        <section className="card stack">
-          <h1>Access Denied</h1>
-          <p className="muted">You can view only your own requests.</p>
-          <div>
-            <Link href="/" className="button-link">
-              Back To Dashboard
-            </Link>
-          </div>
-        </section>
-      </main>
-    );
-  }
-
   const remainingHours = Math.max(task.estimatedHours - task.loggedHours, 0);
   const estimatedCost = task.hourlyRate !== undefined ? (task.estimatedHours * task.hourlyRate).toFixed(2) : "Not set";
 

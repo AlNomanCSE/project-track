@@ -12,10 +12,14 @@ type DbTaskMetaRow = {
 };
 
 function rowToMeta(row: DbTaskMetaRow): TaskAccessMeta {
+  const hasDecision = !!row.decided_by_user_id || !!row.decided_at;
+  const normalizedApprovalStatus: TaskAccessMeta["approvalStatus"] =
+    row.approval_status !== "pending" && !hasDecision ? "pending" : row.approval_status;
+
   return {
     taskId: row.task_id,
     ownerUserId: row.owner_user_id ?? undefined,
-    approvalStatus: row.approval_status,
+    approvalStatus: normalizedApprovalStatus,
     decisionNote: row.decision_note ?? undefined,
     decidedByUserId: row.decided_by_user_id ?? undefined,
     decidedAt: row.decided_at ?? undefined,
@@ -101,15 +105,18 @@ export function ensureTaskMetaSync(tasks: ProjectTask[], currentUser: AppUser | 
   let changed = false;
   const next: TaskMetaById = { ...current };
   const existingIds = new Set(tasks.map((task) => task.id));
+  const isManager = currentUser?.role === "admin" || currentUser?.role === "super_user";
 
   for (const task of tasks) {
     if (next[task.id]) continue;
+    if (!isManager) continue;
 
     changed = true;
     next[task.id] = {
       taskId: task.id,
       ownerUserId: currentUser?.id,
-      approvalStatus: currentUser?.role === "client" ? "pending" : "approved",
+      // Missing meta should never be auto-approved; keep it pending for explicit review.
+      approvalStatus: "pending",
       updatedAt: nowIso
     };
   }
@@ -123,18 +130,21 @@ export function ensureTaskMetaSync(tasks: ProjectTask[], currentUser: AppUser | 
   return { changed, next };
 }
 
-export function getVisibleTasks(tasks: ProjectTask[], metaById: TaskMetaById, user: AppUser) {
-  if (user.role === "admin" || user.role === "super_user") return tasks;
-  return tasks.filter((task) => metaById[task.id]?.ownerUserId === user.id);
+export function getVisibleTasks(tasks: ProjectTask[], _metaById: TaskMetaById, _user: AppUser) {
+  return tasks;
 }
 
 export function metaForNewTask(taskId: string, user: AppUser): TaskAccessMeta {
   const nowIso = new Date().toISOString();
+  const isManager = user.role === "admin" || user.role === "super_user";
 
   return {
     taskId,
     ownerUserId: user.id,
-    approvalStatus: user.role === "admin" || user.role === "super_user" ? "approved" : "pending",
+    approvalStatus: isManager ? "approved" : "pending",
+    decisionNote: isManager ? "Auto-approved by owner role" : undefined,
+    decidedByUserId: isManager ? user.id : undefined,
+    decidedAt: isManager ? nowIso : undefined,
     updatedAt: nowIso
   };
 }

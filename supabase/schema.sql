@@ -274,15 +274,7 @@ $$;
 drop policy if exists "project tasks select" on public.project_tasks;
 create policy "project tasks select" on public.project_tasks
 for select to authenticated
-using (
-  public.app_is_manager()
-  or exists (
-    select 1
-    from public.task_access_meta m
-    where m.task_id = project_tasks.id
-      and m.owner_user_id = public.app_current_user_id()
-  )
-);
+using (public.app_current_user_id() is not null);
 
 drop policy if exists "project tasks insert" on public.project_tasks;
 create policy "project tasks insert" on public.project_tasks
@@ -292,103 +284,55 @@ with check (public.app_current_user_id() is not null);
 drop policy if exists "project tasks update" on public.project_tasks;
 create policy "project tasks update" on public.project_tasks
 for update to authenticated
-using (
-  public.app_is_manager()
-  or exists (
-    select 1
-    from public.task_access_meta m
-    where m.task_id = project_tasks.id
-      and m.owner_user_id = public.app_current_user_id()
-  )
-)
-with check (
-  public.app_is_manager()
-  or exists (
-    select 1
-    from public.task_access_meta m
-    where m.task_id = project_tasks.id
-      and m.owner_user_id = public.app_current_user_id()
-  )
-);
+using (auth.role() = 'authenticated')
+with check (auth.role() = 'authenticated');
 
 drop policy if exists "project tasks delete" on public.project_tasks;
 create policy "project tasks delete" on public.project_tasks
 for delete to authenticated
-using (public.app_is_manager());
+using (public.app_is_super_user());
 
 drop policy if exists "task events select" on public.task_events;
 create policy "task events select" on public.task_events
 for select to authenticated
-using (
-  public.app_is_manager()
-  or exists (
-    select 1
-    from public.task_access_meta m
-    where m.task_id = task_events.task_id
-      and m.owner_user_id = public.app_current_user_id()
-  )
-);
+using (auth.role() = 'authenticated');
 
 drop policy if exists "task events insert" on public.task_events;
 create policy "task events insert" on public.task_events
 for insert to authenticated
-with check (
-  public.app_is_manager()
-  or exists (
-    select 1
-    from public.task_access_meta m
-    where m.task_id = task_events.task_id
-      and m.owner_user_id = public.app_current_user_id()
-  )
-);
+with check (auth.role() = 'authenticated');
 
 drop policy if exists "task events update" on public.task_events;
 create policy "task events update" on public.task_events
 for update to authenticated
-using (public.app_is_manager())
-with check (public.app_is_manager());
+using (auth.role() = 'authenticated')
+with check (auth.role() = 'authenticated');
 
 drop policy if exists "task events delete" on public.task_events;
 create policy "task events delete" on public.task_events
 for delete to authenticated
-using (public.app_is_manager());
+using (auth.role() = 'authenticated');
 
 drop policy if exists "task hour revisions select" on public.task_hour_revisions;
 create policy "task hour revisions select" on public.task_hour_revisions
 for select to authenticated
-using (
-  public.app_is_manager()
-  or exists (
-    select 1
-    from public.task_access_meta m
-    where m.task_id = task_hour_revisions.task_id
-      and m.owner_user_id = public.app_current_user_id()
-  )
-);
+using (auth.role() = 'authenticated');
 
 drop policy if exists "task hour revisions insert" on public.task_hour_revisions;
 create policy "task hour revisions insert" on public.task_hour_revisions
 for insert to authenticated
-with check (
-  public.app_is_manager()
-  or exists (
-    select 1
-    from public.task_access_meta m
-    where m.task_id = task_hour_revisions.task_id
-      and m.owner_user_id = public.app_current_user_id()
-  )
-);
+with check (auth.role() = 'authenticated');
 
 drop policy if exists "task hour revisions update" on public.task_hour_revisions;
 create policy "task hour revisions update" on public.task_hour_revisions
 for update to authenticated
-using (public.app_is_manager())
-with check (public.app_is_manager());
+using (auth.role() = 'authenticated')
+with check (auth.role() = 'authenticated');
 
 drop policy if exists "task hour revisions delete" on public.task_hour_revisions;
 create policy "task hour revisions delete" on public.task_hour_revisions
 for delete to authenticated
-using (public.app_is_manager());
+using (auth.role() = 'authenticated');
 
 drop policy if exists "app users select" on public.app_users;
 create policy "app users select" on public.app_users
@@ -417,35 +361,23 @@ using (public.app_is_super_user());
 drop policy if exists "task access meta select" on public.task_access_meta;
 create policy "task access meta select" on public.task_access_meta
 for select to authenticated
-using (
-  public.app_is_manager()
-  or owner_user_id = public.app_current_user_id()
-);
+using (auth.role() = 'authenticated');
 
 drop policy if exists "task access meta insert" on public.task_access_meta;
 create policy "task access meta insert" on public.task_access_meta
 for insert to authenticated
-with check (
-  public.app_is_manager()
-  or owner_user_id = public.app_current_user_id()
-);
+with check (auth.role() = 'authenticated');
 
 drop policy if exists "task access meta update" on public.task_access_meta;
 create policy "task access meta update" on public.task_access_meta
 for update to authenticated
-using (
-  public.app_is_manager()
-  or owner_user_id = public.app_current_user_id()
-)
-with check (
-  public.app_is_manager()
-  or owner_user_id = public.app_current_user_id()
-);
+using (auth.role() = 'authenticated')
+with check (auth.role() = 'authenticated');
 
 drop policy if exists "task access meta delete" on public.task_access_meta;
 create policy "task access meta delete" on public.task_access_meta
 for delete to authenticated
-using (public.app_is_manager());
+using (auth.role() = 'authenticated');
 
 -- Migrate old snapshot-style table if it exists:
 -- project_tracker_state.tasks (json array) -> project_tasks rows
