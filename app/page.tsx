@@ -42,12 +42,19 @@ function isRollbackToClientReview(from: TaskStatus, to: TaskStatus): boolean {
 }
 
 export default function HomePage() {
-  const [theme, setTheme] = useState<AppTheme>("dark");
+  const TASKS_PER_PAGE = 25;
+  const [theme, setTheme] = useState<AppTheme>(() => {
+    if (typeof window === "undefined") return "dark";
+    const saved = window.localStorage.getItem("project-tracker-theme");
+    if (saved === "dark" || saved === "light") return saved;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
   const [tasks, setTasks] = useState<ProjectTask[]>([]);
   const [taskMetaById, setTaskMetaById] = useState<TaskMetaById>({});
   const [users, setUsers] = useState<AppUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [activeTab, setActiveTab] = useState<"add" | "list">("add");
+  const [listPage, setListPage] = useState(1);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
 
   const [loginValues, setLoginValues] = useState({ email: "", password: "" });
@@ -101,8 +108,9 @@ export default function HomePage() {
   };
 
   const persistTasks = (next: ProjectTask[]) => {
+    const previous = tasks;
     setTasks(next);
-    void taskRepository.write(next);
+    void taskRepository.writeDelta(previous, next);
   };
 
   const persistTaskMeta = (next: TaskMetaById) => {
@@ -144,17 +152,6 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    const saved = window.localStorage.getItem("project-tracker-theme");
-    if (saved === "dark" || saved === "light") {
-      setTheme(saved);
-      return;
-    }
-
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    setTheme(prefersDark ? "dark" : "light");
-  }, []);
-
-  useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     window.localStorage.setItem("project-tracker-theme", theme);
   }, [theme]);
@@ -183,6 +180,11 @@ export default function HomePage() {
   }, [tasks, taskMetaById, currentUser, filters]);
   const isCurrentSuperUser = isSuperUser(currentUser);
   const canManageTasks = !!currentUser && (currentUser.role === "admin" || currentUser.role === "super_user");
+  const canEditTaskByRole = (taskId: string) => {
+    if (!currentUser) return false;
+    if (currentUser.role === "admin" || currentUser.role === "super_user") return true;
+    return taskMetaById[taskId]?.ownerUserId === currentUser.id;
+  };
 
   const approvalByTaskId = useMemo(() => {
     const map: Record<string, TaskApprovalStatus> = {};
@@ -225,6 +227,24 @@ export default function HomePage() {
 
     return { estimated, logged, remaining, completed };
   }, [visibleTasks]);
+
+  const totalListPages = Math.max(1, Math.ceil(visibleTasks.length / TASKS_PER_PAGE));
+
+  useEffect(() => {
+    setListPage(1);
+  }, [filters, currentUser?.id]);
+
+  useEffect(() => {
+    if (listPage > totalListPages) {
+      setListPage(totalListPages);
+    }
+  }, [listPage, totalListPages]);
+
+  const paginatedVisibleTasks = useMemo(() => {
+    const page = Math.min(Math.max(listPage, 1), totalListPages);
+    const start = (page - 1) * TASKS_PER_PAGE;
+    return visibleTasks.slice(start, start + TASKS_PER_PAGE);
+  }, [visibleTasks, listPage, totalListPages, TASKS_PER_PAGE]);
 
   const addTask = (values: {
     title: string;
@@ -310,9 +330,8 @@ export default function HomePage() {
 
     const target = tasks.find((task) => task.id === taskId);
     if (!target) return;
-    const targetMeta = taskMetaById[taskId];
-    if (targetMeta?.ownerUserId !== currentUser.id) {
-      openModal("Access Denied", "You can edit only your own tasks.", "error");
+    if (!canEditTaskByRole(taskId)) {
+      openModal("Access Denied", "You do not have permission to edit this task.", "error");
       return;
     }
     const isRollback = isRollbackToClientReview(target.status, nextStatus);
@@ -511,12 +530,12 @@ export default function HomePage() {
       requestedDate: string;
       changePoints: string[];
       status: TaskStatus;
-      statusDate?: string;
       estimatedHours: number;
       loggedHours: number;
       hourlyRate?: number;
       hourReason?: string;
       deliveryDate?: string;
+      startDate?: string;
       confirmedDate?: string;
       approvedDate?: string;
       completedDate?: string;
@@ -531,11 +550,11 @@ export default function HomePage() {
     const target = tasks.find((task) => task.id === taskId);
     if (!target) return;
 
-    const targetMeta = taskMetaById[taskId];
-    if (!targetMeta || targetMeta.ownerUserId !== currentUser.id) {
-      openModal("Access Denied", "You can edit only your own tasks.", "error");
+    if (!canEditTaskByRole(taskId)) {
+      openModal("Access Denied", "You do not have permission to edit this task.", "error");
       return;
     }
+    const targetMeta = taskMetaById[taskId];
 
     if (currentUser.role === "client") {
       const nowIso = new Date().toISOString();
@@ -613,8 +632,17 @@ export default function HomePage() {
       return;
     }
 
-    if (target.status !== payload.status && !payload.statusDate) {
-      openModal("Status Date Required", "Please set status date when changing status.", "error");
+    const transitionDateByStatus: Partial<Record<TaskStatus, string | undefined>> = {
+      Confirmed: payload.confirmedDate,
+      Approved: payload.approvedDate,
+      "Working On It": payload.startDate,
+      Completed: payload.completedDate,
+      Handover: payload.handoverDate
+    };
+    const transitionDate = transitionDateByStatus[payload.status];
+
+    if (target.status !== payload.status && !transitionDate) {
+      openModal("Status Date Required", `Please set ${payload.status} date when changing status.`, "error");
       return;
     }
 
@@ -622,9 +650,9 @@ export default function HomePage() {
       if (task.id !== taskId) return task;
 
       const nowIso = new Date().toISOString();
-      const statusDate = payload.statusDate;
       const nextEstimated = isRollback ? 0 : payload.estimatedHours;
       const currentIndex = statusIndex(payload.status);
+      const startDate = currentIndex >= statusIndex("Working On It") ? payload.startDate : undefined;
       const confirmedDate = currentIndex >= statusIndex("Confirmed") ? payload.confirmedDate : undefined;
       const approvedDate = currentIndex >= statusIndex("Approved") ? payload.approvedDate : undefined;
       const completedDate = currentIndex >= statusIndex("Completed") ? payload.completedDate : undefined;
@@ -647,7 +675,7 @@ export default function HomePage() {
         id: createId(),
         status: payload.status,
         changedAt: nowIso,
-        note: `Request edited${statusDate ? ` | Status date: ${statusDate}` : ""}${payload.hourReason ? ` | ${payload.hourReason}` : ""}`
+        note: `Request edited${transitionDate ? ` | ${payload.status} date: ${transitionDate}` : ""}${payload.hourReason ? ` | ${payload.hourReason}` : ""}`
       });
 
       const updated: ProjectTask = {
@@ -662,9 +690,9 @@ export default function HomePage() {
         loggedHours: payload.loggedHours,
         hourlyRate: payload.hourlyRate,
         deliveryDate: isRollback ? undefined : payload.deliveryDate,
+        startDate: isRollback ? undefined : startDate,
         confirmedDate: isRollback ? undefined : confirmedDate,
         approvedDate: isRollback ? undefined : approvedDate,
-        startDate: isRollback ? undefined : task.startDate,
         completedDate: isRollback ? undefined : completedDate,
         handoverDate: isRollback ? undefined : handoverDate,
         updatedAt: nowIso,
@@ -672,7 +700,7 @@ export default function HomePage() {
         hourRevisions
       };
 
-      return applyStatusMetadata(updated, payload.status, statusDate);
+      return applyStatusMetadata(updated, payload.status, transitionDate);
     });
 
     persistTasks(next);
@@ -1079,8 +1107,34 @@ export default function HomePage() {
           ) : (
             <div className="stack">
               <TaskFilters filters={filters} onChange={setFilters} />
+              <div className="row between gap">
+                <small className="muted">
+                  Showing {paginatedVisibleTasks.length} of {visibleTasks.length} requests
+                </small>
+                <div className="row gap">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={listPage <= 1}
+                    onClick={() => setListPage((prev) => Math.max(prev - 1, 1))}
+                  >
+                    Prev
+                  </button>
+                  <small className="muted">
+                    Page {totalListPages === 0 ? 0 : listPage} / {totalListPages}
+                  </small>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={listPage >= totalListPages}
+                    onClick={() => setListPage((prev) => Math.min(prev + 1, totalListPages))}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
               <TaskList
-                tasks={visibleTasks}
+                tasks={paginatedVisibleTasks}
                 viewerRole={currentUser.role}
                 viewerUserId={currentUser.id}
                 ownerByTaskId={ownerByTaskId}

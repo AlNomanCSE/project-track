@@ -14,10 +14,6 @@ type DbUserRow = {
   rejection_reason: string | null;
 };
 
-function createId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function rowToUser(row: DbUserRow): AppUser {
   return {
     id: row.id,
@@ -45,8 +41,42 @@ async function readUserByEmail(email: string): Promise<AppUser | null> {
     .eq("email", email)
     .maybeSingle();
 
-  if (error || !data) return null;
+  if (error) {
+    throw new Error(error.message);
+  }
+  if (!data) return null;
   return rowToUser(data as DbUserRow);
+}
+
+async function upsertUserProfileFromAuth(input: {
+  authUserId: string;
+  email: string;
+  name?: string;
+  role: UserRole;
+  status: AppUser["status"];
+}) {
+  if (!supabase) return;
+
+  const nowIso = new Date().toISOString();
+  const { error } = await supabase.from("app_users").upsert(
+    {
+      id: input.authUserId,
+      name: (input.name || input.email.split("@")[0]).trim(),
+      email: input.email,
+      role: input.role,
+      status: input.status,
+      approved_by_user_id: null,
+      approved_at: input.status === "approved" ? nowIso : null,
+      rejection_reason: null,
+      created_at: nowIso,
+      updated_at: nowIso
+    },
+    { onConflict: "email" }
+  );
+
+  if (error) {
+    throw new Error(error.message);
+  }
 }
 
 export async function readUsers(): Promise<AppUser[]> {
@@ -72,8 +102,37 @@ export async function readSessionUser(users?: AppUser[]): Promise<AppUser | null
   if (error || !data.user?.email) return null;
 
   const sessionEmail = data.user.email.trim().toLowerCase();
-  const list = users ?? (await readUsers());
-  const sessionUser = list.find((user) => user.email.trim().toLowerCase() === sessionEmail) ?? null;
+  let sessionUser: AppUser | null = null;
+  try {
+    if (users) {
+      sessionUser = users.find((user) => user.email.trim().toLowerCase() === sessionEmail) ?? null;
+    } else {
+      sessionUser = await readUserByEmail(sessionEmail);
+    }
+  } catch (readError) {
+    console.warn("Session profile read failed. Keeping auth session:", readError);
+    return null;
+  }
+
+  if (!sessionUser) {
+    const roleFromMeta = sanitizeRole(data.user.user_metadata?.role);
+    const status: AppUser["status"] =
+      roleFromMeta === "super_user" && sessionEmail === "abdullahalnomancse@gmail.com" ? "approved" : "pending";
+
+    try {
+      await upsertUserProfileFromAuth({
+        authUserId: data.user.id,
+        email: sessionEmail,
+        name: typeof data.user.user_metadata?.name === "string" ? data.user.user_metadata.name : undefined,
+        role: roleFromMeta,
+        status
+      });
+      sessionUser = await readUserByEmail(sessionEmail);
+    } catch (upsertError) {
+      console.warn("Session profile sync failed:", upsertError);
+      return null;
+    }
+  }
 
   if (!sessionUser || sessionUser.status !== "approved") {
     await supabase.auth.signOut();
@@ -103,7 +162,7 @@ export async function registerUser(input: {
     return { ok: false, message: "Password must be at least 6 characters." };
   }
 
-  const { error: signUpError } = await supabase.auth.signUp({
+  const { data, error: signUpError } = await supabase.auth.signUp({
     email,
     password,
     options: {
@@ -115,13 +174,31 @@ export async function registerUser(input: {
     return { ok: false, message: `Auth registration failed: ${signUpError.message}` };
   }
 
+  const authUser = data.user;
   const nowIso = new Date().toISOString();
+  const status: AppUser["status"] =
+    input.role === "super_user" && email === "abdullahalnomancse@gmail.com" ? "approved" : "pending";
+
+  if (authUser?.id) {
+    try {
+      await upsertUserProfileFromAuth({
+        authUserId: authUser.id,
+        email,
+        name,
+        role: input.role,
+        status
+      });
+    } catch (upsertError) {
+      console.warn("Supabase register profile sync failed:", upsertError);
+    }
+  }
+
   const appUser: AppUser = {
-    id: createId(),
+    id: authUser?.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     name,
     email,
     role: input.role,
-    status: "pending",
+    status,
     createdAt: nowIso
   };
 
@@ -156,11 +233,16 @@ export async function loginUser(input: {
     return { ok: false, message: "Auth login failed: user email missing in session response." };
   }
 
-  const appUser = await readUserByEmail(data.user.email.toLowerCase());
+  let appUser: AppUser | null = null;
+  try {
+    appUser = await readUserByEmail(data.user.email.toLowerCase());
+  } catch (readError) {
+    await supabase.auth.signOut();
+    return { ok: false, message: `Profile read failed: ${String(readError)}` };
+  }
   let resolvedUser = appUser;
 
   if (!resolvedUser) {
-    const nowIso = new Date().toISOString();
     const metaName = typeof data.user.user_metadata?.name === "string" ? data.user.user_metadata.name : "";
     const roleFromMeta = sanitizeRole(data.user.user_metadata?.role);
     const status: AppUser["status"] =
@@ -168,26 +250,25 @@ export async function loginUser(input: {
         ? "approved"
         : "pending";
 
-    const insertPayload = {
-      id: createId(),
-      name: metaName.trim() || data.user.email.split("@")[0],
-      email: data.user.email.toLowerCase(),
-      role: roleFromMeta,
-      status,
-      approved_by_user_id: null,
-      approved_at: status === "approved" ? nowIso : null,
-      rejection_reason: null,
-      created_at: nowIso,
-      updated_at: nowIso
-    };
-
-    const { error: insertError } = await supabase.from("app_users").insert(insertPayload);
-    if (insertError) {
+    try {
+      await upsertUserProfileFromAuth({
+        authUserId: data.user.id,
+        email: data.user.email.toLowerCase(),
+        name: metaName,
+        role: roleFromMeta,
+        status
+      });
+    } catch (insertError) {
       await supabase.auth.signOut();
-      return { ok: false, message: `Profile creation failed: ${insertError.message}` };
+      return { ok: false, message: `Profile creation failed: ${String(insertError)}` };
     }
 
-    resolvedUser = await readUserByEmail(data.user.email.toLowerCase());
+    try {
+      resolvedUser = await readUserByEmail(data.user.email.toLowerCase());
+    } catch (readError) {
+      await supabase.auth.signOut();
+      return { ok: false, message: `Profile read failed: ${String(readError)}` };
+    }
     if (!resolvedUser) {
       await supabase.auth.signOut();
       return { ok: false, message: "User profile not found after creation." };

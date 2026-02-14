@@ -131,7 +131,10 @@ export function ensureTaskMetaSync(tasks: ProjectTask[], currentUser: AppUser | 
 }
 
 export function getVisibleTasks(tasks: ProjectTask[], _metaById: TaskMetaById, _user: AppUser) {
-  return tasks;
+  const isManager = _user.role === "admin" || _user.role === "super_user";
+  if (isManager) return tasks;
+
+  return tasks.filter((task) => _metaById[task.id]?.ownerUserId === _user.id);
 }
 
 export function metaForNewTask(taskId: string, user: AppUser): TaskAccessMeta {
