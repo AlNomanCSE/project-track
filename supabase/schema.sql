@@ -358,6 +358,71 @@ create policy "app users delete" on public.app_users
 for delete to authenticated
 using (public.app_is_super_user());
 
+-- Auto-create app_users profile when a new auth user registers.
+create or replace function public.sync_app_user_from_auth()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  role_raw text;
+  role_value text;
+  status_value text;
+  profile_name text;
+begin
+  role_raw := lower(coalesce(new.raw_user_meta_data->>'role', 'client'));
+  if role_raw in ('super_user', 'admin', 'client') then
+    role_value := role_raw;
+  else
+    role_value := 'client';
+  end if;
+
+  status_value := 'pending';
+  if role_value = 'super_user' and lower(coalesce(new.email, '')) = 'abdullahalnomancse@gmail.com' then
+    status_value := 'approved';
+  end if;
+
+  profile_name := nullif(trim(coalesce(new.raw_user_meta_data->>'name', '')), '');
+  if profile_name is null then
+    profile_name := split_part(coalesce(new.email, ''), '@', 1);
+  end if;
+
+  insert into public.app_users (
+    id,
+    name,
+    email,
+    role,
+    status,
+    approved_by_user_id,
+    approved_at,
+    rejection_reason,
+    created_at,
+    updated_at
+  )
+  values (
+    new.id::text,
+    profile_name,
+    lower(coalesce(new.email, '')),
+    role_value,
+    status_value,
+    null,
+    case when status_value = 'approved' then now() else null end,
+    null,
+    coalesce(new.created_at, now()),
+    now()
+  )
+  on conflict (email) do nothing;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_sync_app_user_from_auth on auth.users;
+create trigger trg_sync_app_user_from_auth
+after insert on auth.users
+for each row execute function public.sync_app_user_from_auth();
+
 drop policy if exists "task access meta select" on public.task_access_meta;
 create policy "task access meta select" on public.task_access_meta
 for select to authenticated

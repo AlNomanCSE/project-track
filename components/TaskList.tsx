@@ -12,12 +12,12 @@ type EditPayload = {
   requestedDate: string;
   changePoints: string[];
   status: TaskStatus;
-  statusDate?: string;
   estimatedHours: number;
   loggedHours: number;
   hourlyRate?: number;
   hourReason?: string;
   deliveryDate?: string;
+  startDate?: string;
   confirmedDate?: string;
   approvedDate?: string;
   completedDate?: string;
@@ -53,9 +53,11 @@ export default function TaskList({
 }: Props) {
   const isClientViewer = viewerRole === "client";
   const isSuperViewer = viewerRole === "super_user";
+  const isManagerViewer = viewerRole === "admin" || viewerRole === "super_user";
   const canDeleteAnyTask = isSuperViewer;
 
   const canEditTask = (taskId: string) => {
+    if (isManagerViewer) return true;
     return ownerByTaskId[taskId] === viewerUserId;
   };
 
@@ -67,13 +69,13 @@ export default function TaskList({
   const [editPointsByTask, setEditPointsByTask] = useState<Record<string, string[]>>({});
 
   const [editStatusByTask, setEditStatusByTask] = useState<Record<string, TaskStatus>>({});
-  const [editStatusDateByTask, setEditStatusDateByTask] = useState<Record<string, string>>({});
   const [editEstimatedByTask, setEditEstimatedByTask] = useState<Record<string, string>>({});
   const [editLoggedByTask, setEditLoggedByTask] = useState<Record<string, string>>({});
   const [editRateByTask, setEditRateByTask] = useState<Record<string, string>>({});
   const [editHourReasonByTask, setEditHourReasonByTask] = useState<Record<string, string>>({});
 
   const [editDeliveryByTask, setEditDeliveryByTask] = useState<Record<string, string>>({});
+  const [editStartByTask, setEditStartByTask] = useState<Record<string, string>>({});
   const [editConfirmedByTask, setEditConfirmedByTask] = useState<Record<string, string>>({});
   const [editApprovedByTask, setEditApprovedByTask] = useState<Record<string, string>>({});
   const [editCompletedByTask, setEditCompletedByTask] = useState<Record<string, string>>({});
@@ -135,12 +137,12 @@ export default function TaskList({
       requestedDate: editDateByTask[task.id] ?? task.requestedDate,
       changePoints: nextPoints,
       status: isClientViewer ? task.status : selectedStatus,
-      statusDate: isClientViewer ? undefined : (editStatusDateByTask[task.id] ?? "").trim() || undefined,
       estimatedHours: isClientViewer ? task.estimatedHours : nextEstimated,
       loggedHours: isClientViewer ? task.loggedHours : nextLogged,
       hourlyRate: isClientViewer ? task.hourlyRate : nextRate,
       hourReason: isClientViewer ? undefined : (editHourReasonByTask[task.id] ?? "").trim() || undefined,
       deliveryDate: isClientViewer ? task.deliveryDate : (editDeliveryByTask[task.id] ?? "").trim() || undefined,
+      startDate: isClientViewer ? task.startDate : (editStartByTask[task.id] ?? "").trim() || undefined,
       confirmedDate: isClientViewer ? task.confirmedDate : (editConfirmedByTask[task.id] ?? "").trim() || undefined,
       approvedDate: isClientViewer ? task.approvedDate : (editApprovedByTask[task.id] ?? "").trim() || undefined,
       completedDate: isClientViewer ? task.completedDate : (editCompletedByTask[task.id] ?? "").trim() || undefined,
@@ -159,7 +161,7 @@ export default function TaskList({
 
   const startEdit = (task: ProjectTask) => {
     if (!canEditTask(task.id)) {
-      onNotify("Access Denied", "You can edit only your own requests.", "error");
+      onNotify("Access Denied", "You do not have permission to edit this task.", "error");
       return;
     }
 
@@ -170,13 +172,13 @@ export default function TaskList({
     setEditPointsByTask((prev) => ({ ...prev, [task.id]: task.changePoints.length ? [...task.changePoints] : [""] }));
 
     setEditStatusByTask((prev) => ({ ...prev, [task.id]: task.status }));
-    setEditStatusDateByTask((prev) => ({ ...prev, [task.id]: "" }));
     setEditEstimatedByTask((prev) => ({ ...prev, [task.id]: String(task.estimatedHours) }));
     setEditLoggedByTask((prev) => ({ ...prev, [task.id]: String(task.loggedHours) }));
     setEditRateByTask((prev) => ({ ...prev, [task.id]: task.hourlyRate === undefined ? "" : String(task.hourlyRate) }));
     setEditHourReasonByTask((prev) => ({ ...prev, [task.id]: "" }));
 
     setEditDeliveryByTask((prev) => ({ ...prev, [task.id]: task.deliveryDate || "" }));
+    setEditStartByTask((prev) => ({ ...prev, [task.id]: task.startDate || "" }));
     setEditConfirmedByTask((prev) => ({ ...prev, [task.id]: task.confirmedDate || "" }));
     setEditApprovedByTask((prev) => ({ ...prev, [task.id]: task.approvedDate || "" }));
     setEditCompletedByTask((prev) => ({ ...prev, [task.id]: task.completedDate || "" }));
@@ -206,6 +208,7 @@ export default function TaskList({
 
               const selectedStatus = editStatusByTask[task.id] ?? task.status;
               const selectedStatusIndex = STATUSES.indexOf(selectedStatus);
+              const canEditStartDate = selectedStatusIndex >= STATUSES.indexOf("Working On It");
               const canEditConfirmedDate = selectedStatusIndex >= STATUSES.indexOf("Confirmed");
               const canEditApprovedDate = selectedStatusIndex >= STATUSES.indexOf("Approved");
               const canEditCompletedDate = selectedStatusIndex >= STATUSES.indexOf("Completed");
@@ -291,7 +294,7 @@ export default function TaskList({
 
                           {!isClientViewer ? (
                             <>
-                              <div className="grid five">
+                              <div className="grid four">
                                 <label>
                                   Workflow Status
                                   <select
@@ -304,14 +307,6 @@ export default function TaskList({
                                       </option>
                                     ))}
                                   </select>
-                                </label>
-                                <label>
-                                  Status Date
-                                  <input
-                                    type="date"
-                                    value={editStatusDateByTask[task.id] ?? ""}
-                                    onChange={(e) => setEditStatusDateByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
-                                  />
                                 </label>
                                 <label>
                                   Estimated Hours
@@ -354,13 +349,22 @@ export default function TaskList({
                                 />
                               </label>
 
-                              <div className="grid five">
+                              <div className="grid three">
                                 <label>
                                   Delivery Date
                                   <input
                                     type="date"
                                     value={editDeliveryByTask[task.id] ?? task.deliveryDate ?? ""}
                                     onChange={(e) => setEditDeliveryByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  />
+                                </label>
+                                <label>
+                                  Start Date
+                                  <input
+                                    type="date"
+                                    value={editStartByTask[task.id] ?? task.startDate ?? ""}
+                                    disabled={!canEditStartDate}
+                                    onChange={(e) => setEditStartByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
                                   />
                                 </label>
                                 <label>
@@ -513,12 +517,12 @@ export default function TaskList({
         confirmLabel="Yes, Edit"
         onClose={() => setEditConfirmTask(null)}
         onConfirm={() => {
-          if (editConfirmTask) {
-            if (!canEditTask(editConfirmTask.id)) {
-              onNotify("Access Denied", "You can edit only your own requests.", "error");
-              setEditConfirmTask(null);
-              return;
-            }
+            if (editConfirmTask) {
+              if (!canEditTask(editConfirmTask.id)) {
+                onNotify("Access Denied", "You do not have permission to edit this task.", "error");
+                setEditConfirmTask(null);
+                return;
+              }
             startEdit(editConfirmTask);
           }
         }}

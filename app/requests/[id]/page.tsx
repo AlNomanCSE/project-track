@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { formatDateTime, formatShortDate } from "@/lib/date";
 import { readSessionUser, readUsers } from "@/lib/auth";
-import { readTaskMetaById, type TaskMetaById } from "@/lib/task-access";
+import { getVisibleTasks, readTaskMetaById, type TaskMetaById } from "@/lib/task-access";
 import { taskRepository } from "@/lib/storage";
 import type { AppUser, ProjectTask } from "@/lib/types";
 
@@ -39,10 +39,11 @@ export default function RequestDetailsPage() {
   }, []);
 
   const task = useMemo(() => {
-    if (!params?.id) return null;
+    if (!params?.id || !currentUser) return null;
     const id = decodeURIComponent(params.id);
-    return tasks.find((item) => item.id === id) || null;
-  }, [params?.id, tasks]);
+    const visible = getVisibleTasks(tasks, taskMetaById, currentUser);
+    return visible.find((item) => item.id === id) || null;
+  }, [params?.id, tasks, taskMetaById, currentUser]);
 
   if (!currentUser) {
     return (

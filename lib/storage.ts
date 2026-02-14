@@ -9,6 +9,7 @@ const SUPABASE_REVISIONS_TABLE = "task_hour_revisions";
 type TaskRepository = {
   read: () => Promise<ProjectTask[]>;
   write: (tasks: ProjectTask[]) => Promise<void>;
+  writeDelta: (previous: ProjectTask[], next: ProjectTask[]) => Promise<void>;
 };
 
 type DbTaskRow = {
@@ -174,6 +175,49 @@ const taskToDbRow = (task: ProjectTask): DbTaskRow => ({
   updated_at: task.updatedAt
 });
 
+const taskToDbUpdate = (task: ProjectTask): Omit<DbTaskRow, "id" | "created_at"> => ({
+  title: task.title,
+  description: task.description,
+  change_points: task.changePoints,
+  requested_date: task.requestedDate,
+  client_name: task.clientName ?? null,
+  status: task.status,
+  eta_date: task.etaDate ?? null,
+  delivery_date: task.deliveryDate ?? null,
+  confirmed_date: task.confirmedDate ?? null,
+  approved_date: task.approvedDate ?? null,
+  estimated_hours: task.estimatedHours,
+  logged_hours: task.loggedHours,
+  hourly_rate: task.hourlyRate ?? null,
+  start_date: task.startDate ?? null,
+  completed_date: task.completedDate ?? null,
+  handover_date: task.handoverDate ?? null,
+  updated_at: task.updatedAt
+});
+
+function taskHasChanged(previous: ProjectTask | undefined, next: ProjectTask): boolean {
+  if (!previous) return true;
+  return (
+    previous.updatedAt !== next.updatedAt ||
+    previous.status !== next.status ||
+    previous.title !== next.title ||
+    previous.description !== next.description ||
+    previous.requestedDate !== next.requestedDate ||
+    previous.clientName !== next.clientName ||
+    previous.estimatedHours !== next.estimatedHours ||
+    previous.loggedHours !== next.loggedHours ||
+    previous.hourlyRate !== next.hourlyRate ||
+    previous.deliveryDate !== next.deliveryDate ||
+    previous.startDate !== next.startDate ||
+    previous.confirmedDate !== next.confirmedDate ||
+    previous.approvedDate !== next.approvedDate ||
+    previous.completedDate !== next.completedDate ||
+    previous.handoverDate !== next.handoverDate ||
+    previous.history.length !== next.history.length ||
+    previous.hourRevisions.length !== next.hourRevisions.length
+  );
+}
+
 class LocalStorageRepository implements TaskRepository {
   async read(): Promise<ProjectTask[]> {
     if (typeof window === "undefined") return [];
@@ -193,6 +237,10 @@ class LocalStorageRepository implements TaskRepository {
   async write(tasks: ProjectTask[]) {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+  }
+
+  async writeDelta(_previous: ProjectTask[], next: ProjectTask[]) {
+    await this.write(next);
   }
 }
 
@@ -283,103 +331,121 @@ class SupabaseTaskRepository implements TaskRepository {
   }
 
   async write(tasks: ProjectTask[]): Promise<void> {
-    await this.fallback.write(tasks);
+    const previous = await this.fallback.read();
+    await this.writeDelta(previous, tasks);
+  }
+
+  async writeDelta(previous: ProjectTask[], next: ProjectTask[]): Promise<void> {
+    await this.fallback.write(next);
     if (!supabase) return;
 
-    const rows = tasks.map(taskToDbRow);
+    const previousById = new Map(previous.map((task) => [task.id, task]));
+    const nextById = new Map(next.map((task) => [task.id, task]));
+    const changedTasks = next.filter((task) => taskHasChanged(previousById.get(task.id), task));
+    const removedTaskIds = previous
+      .map((task) => task.id)
+      .filter((taskId) => !nextById.has(taskId));
 
-    const { error: upsertTaskError } = await supabase
-      .from(SUPABASE_TASKS_TABLE)
-      .upsert(rows, { onConflict: "id" });
+    const syncedTaskIds = new Set<string>();
 
-    if (upsertTaskError) {
-      console.warn("Supabase task write failed, local data kept:", upsertTaskError.message);
-      return;
+    for (const task of changedTasks) {
+      const previousTask = previousById.get(task.id);
+
+      if (!previousTask) {
+        const { error: insertTaskError } = await supabase
+          .from(SUPABASE_TASKS_TABLE)
+          .insert(taskToDbRow(task));
+
+        if (insertTaskError) {
+          console.warn(`Supabase task insert failed for ${task.id}:`, insertTaskError.message);
+          continue;
+        }
+
+        syncedTaskIds.add(task.id);
+        continue;
+      }
+
+      const { data: updatedRow, error: updateTaskError } = await supabase
+        .from(SUPABASE_TASKS_TABLE)
+        .update(taskToDbUpdate(task))
+        .eq("id", task.id)
+        .eq("updated_at", previousTask.updatedAt)
+        .select("id")
+        .maybeSingle();
+
+      if (updateTaskError) {
+        console.warn(`Supabase task update failed for ${task.id}:`, updateTaskError.message);
+        continue;
+      }
+
+      if (!updatedRow) {
+        console.warn(`Supabase task update skipped due to concurrent change for ${task.id}.`);
+        continue;
+      }
+
+      syncedTaskIds.add(task.id);
     }
 
-    const { data: existingRows, error: existingError } = await supabase
-      .from(SUPABASE_TASKS_TABLE)
-      .select("id");
-
-    if (existingError) {
-      console.warn("Supabase task cleanup read failed:", existingError.message);
-      return;
-    }
-
-    const nextIds = new Set(tasks.map((task) => task.id));
-    const toDelete = (existingRows ?? [])
-      .map((row) => row.id)
-      .filter((id) => !nextIds.has(id));
-
-    if (toDelete.length > 0) {
+    if (removedTaskIds.length > 0) {
       const { error: deleteTaskError } = await supabase
         .from(SUPABASE_TASKS_TABLE)
         .delete()
-        .in("id", toDelete);
+        .in("id", removedTaskIds);
 
       if (deleteTaskError) {
         console.warn("Supabase task delete sync failed:", deleteTaskError.message);
       }
     }
 
-    const currentTaskIds = tasks.map((task) => task.id);
-    if (currentTaskIds.length === 0) return;
+    if (syncedTaskIds.size === 0) return;
 
-    const { error: clearEventsError } = await supabase
-      .from(SUPABASE_EVENTS_TABLE)
-      .delete()
-      .in("task_id", currentTaskIds);
+    const eventRows = changedTasks.flatMap((task) => {
+      if (!syncedTaskIds.has(task.id)) return [];
 
-    if (clearEventsError) {
-      console.warn("Supabase event cleanup failed:", clearEventsError.message);
-      return;
-    }
-
-    const { error: clearRevisionsError } = await supabase
-      .from(SUPABASE_REVISIONS_TABLE)
-      .delete()
-      .in("task_id", currentTaskIds);
-
-    if (clearRevisionsError) {
-      console.warn("Supabase revision cleanup failed:", clearRevisionsError.message);
-      return;
-    }
-
-    const eventRows = tasks.flatMap((task) =>
-      task.history.map((event) => ({
-        task_id: task.id,
-        source_event_id: event.id,
-        status: event.status,
-        note: event.note ?? null,
-        changed_at: event.changedAt,
-        event_type: event.note?.toLowerCase().includes("rollback") ? "rollback" : "status_change"
-      }))
-    );
+      const previousHistoryIds = new Set((previousById.get(task.id)?.history ?? []).map((entry) => entry.id));
+      return task.history
+        .filter((entry) => !previousHistoryIds.has(entry.id))
+        .map((event) => ({
+          task_id: task.id,
+          source_event_id: event.id,
+          status: event.status,
+          note: event.note ?? null,
+          changed_at: event.changedAt,
+          event_type: event.note?.toLowerCase().includes("rollback") ? "rollback" : "status_change"
+        }));
+    });
 
     if (eventRows.length > 0) {
-      const { error: insertEventsError } = await supabase.from(SUPABASE_EVENTS_TABLE).insert(eventRows);
-      if (insertEventsError) {
-        console.warn("Supabase event insert failed:", insertEventsError.message);
+      const { error: upsertEventsError } = await supabase
+        .from(SUPABASE_EVENTS_TABLE)
+        .upsert(eventRows, { onConflict: "task_id,source_event_id" });
+      if (upsertEventsError) {
+        console.warn("Supabase event upsert failed:", upsertEventsError.message);
       }
     }
 
-    const revisionRows = tasks.flatMap((task) =>
-      task.hourRevisions.map((revision) => ({
-        task_id: task.id,
-        source_revision_id: revision.id,
-        previous_estimated_hours: revision.previousEstimatedHours,
-        next_estimated_hours: revision.nextEstimatedHours,
-        reason: revision.reason ?? null,
-        changed_at: revision.changedAt
-      }))
-    );
+    const revisionRows = changedTasks.flatMap((task) => {
+      if (!syncedTaskIds.has(task.id)) return [];
+
+      const previousRevisionIds = new Set((previousById.get(task.id)?.hourRevisions ?? []).map((entry) => entry.id));
+      return task.hourRevisions
+        .filter((entry) => !previousRevisionIds.has(entry.id))
+        .map((revision) => ({
+          task_id: task.id,
+          source_revision_id: revision.id,
+          previous_estimated_hours: revision.previousEstimatedHours,
+          next_estimated_hours: revision.nextEstimatedHours,
+          reason: revision.reason ?? null,
+          changed_at: revision.changedAt
+        }));
+    });
 
     if (revisionRows.length > 0) {
-      const { error: insertRevisionsError } = await supabase
+      const { error: upsertRevisionsError } = await supabase
         .from(SUPABASE_REVISIONS_TABLE)
-        .insert(revisionRows);
-      if (insertRevisionsError) {
-        console.warn("Supabase revision insert failed:", insertRevisionsError.message);
+        .upsert(revisionRows, { onConflict: "task_id,source_revision_id" });
+      if (upsertRevisionsError) {
+        console.warn("Supabase revision upsert failed:", upsertRevisionsError.message);
       }
     }
   }
