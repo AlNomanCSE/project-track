@@ -11,6 +11,12 @@
   --border: #2f4338;
   --danger: #dd5b52;
   --ok: #55b26f;
+  --tab-bg: #122119;
+  --tab-border: #355244;
+  --tab-text: #b8d8c2;
+  --tab-active-bg: linear-gradient(180deg, #5b8fc8, #2f6fa8);
+  --tab-active-text: #f2f8ff;
+  --tab-active-border: #78a8db;
   --shadow: 0 0 0 1px rgba(0, 0, 0, 0.45), 0 14px 28px rgba(0, 0, 0, 0.45);
 }
 
@@ -27,6 +33,12 @@
   --border: #c7d7cb;
   --danger: #c74b42;
   --ok: #2f9951;
+  --tab-bg: #edf3ff;
+  --tab-border: #b4c5df;
+  --tab-text: #23476f;
+  --tab-active-bg: linear-gradient(180deg, #4b88d3, #2f6fb4);
+  --tab-active-text: #f6fbff;
+  --tab-active-border: #2f6fb4;
   --shadow: 0 0 0 1px rgba(14, 26, 19, 0.08), 0 10px 22px rgba(17, 33, 23, 0.12);
 }
 
@@ -467,6 +479,20 @@ button.danger {
   align-items: center;
 }
 
+.weekly-plan-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #131d17;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.weekly-plan-item p {
+  color: var(--text);
+  line-height: 1.45;
+}
+
 .tab-header {
   display: flex;
   gap: 8px;
@@ -474,14 +500,16 @@ button.danger {
 }
 
 .tab-btn {
-  background: #132018;
-  color: var(--text);
-  border: 1px solid var(--border);
+  background: var(--tab-bg);
+  color: var(--tab-text);
+  border: 1px solid var(--tab-border);
+  font-weight: 700;
 }
 
 .tab-btn.active {
-  background: linear-gradient(180deg, var(--brand), var(--brand-2));
-  color: #151007;
+  background: var(--tab-active-bg);
+  color: var(--tab-active-text);
+  border-color: var(--tab-active-border);
 }
 
 .table-card {
@@ -692,6 +720,12 @@ button.danger {
   background: #edf5ee;
 }
 
+:root[data-theme="light"] .tab-btn {
+  background: var(--tab-bg);
+  color: var(--tab-text);
+  border-color: var(--tab-border);
+}
+
 :root[data-theme="light"] button.danger {
   color: #320f0d;
 }
@@ -715,6 +749,7 @@ button.danger {
 }
 
 :root[data-theme="light"] .approval-item,
+:root[data-theme="light"] .weekly-plan-item,
 :root[data-theme="light"] .edit-panel,
 :root[data-theme="light"] .modal-card {
   background: #f6fbf7;

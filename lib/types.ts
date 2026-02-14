@@ -65,6 +65,7 @@ export type ProjectTask = {
   status: TaskStatus;
   etaDate?: string;
   deliveryDate?: string;
+  clientReviewDate?: string;
   confirmedDate?: string;
   approvedDate?: string;
   estimatedHours: number;
@@ -84,4 +85,37 @@ export type TaskFilters = {
   fromDate?: string;
   toDate?: string;
   query?: string;
+};
+
+export const WEEKLY_PLAN_STATUSES = ["Not Started", "In Progress", "Blocked", "Done"] as const;
+export type WeeklyPlanStatus = (typeof WEEKLY_PLAN_STATUSES)[number];
+
+export const WEEKLY_DAY_WORK_AREAS = ["Frontend", "Backend", "Frontend + Backend", "Other"] as const;
+export type WeeklyDayWorkArea = (typeof WEEKLY_DAY_WORK_AREAS)[number];
+
+export type WeeklyPlanDailyUpdate = {
+  id: string;
+  date: string;
+  developerName: string;
+  note: string;
+  workArea: WeeklyDayWorkArea;
+  spentHours?: number;
+  progressPercent?: number;
+  updatedAt: string;
+};
+
+export type WeeklyPlan = {
+  id: string;
+  weekStartDate: string;
+  weekEndDate: string;
+  dailyUpdates: WeeklyPlanDailyUpdate[];
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WeeklyPlanInput = {
+  weekStartDate: string;
+  weekEndDate: string;
+  dailyUpdates?: WeeklyPlanDailyUpdate[];
 };

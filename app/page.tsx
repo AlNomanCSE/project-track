@@ -6,7 +6,9 @@ import TaskForm from "@/components/TaskForm";
 import TaskFilters from "@/components/TaskFilters";
 import TaskList from "@/components/TaskList";
 import PopupModal from "@/components/PopupModal";
+import WeeklyPlanSection from "@/components/WeeklyPlanSection";
 import { taskRepository } from "@/lib/storage";
+import { weeklyPlanRepository } from "@/lib/weekly-plan";
 import { filterTasks, canTransition, applyStatusMetadata } from "@/lib/workflow";
 import { decideUserApproval, deleteUserBySuper, loginUser, logoutUser, readSessionUser, readUsers, registerUser } from "@/lib/auth";
 import {
@@ -25,7 +27,9 @@ import {
   type TaskApprovalStatus,
   type TaskFilters as Filters,
   type TaskStatus,
-  type UserRole
+  type UserRole,
+  type WeeklyPlan,
+  type WeeklyPlanInput
 } from "@/lib/types";
 import { isSuperUser } from "@/lib/super-user";
 
@@ -43,17 +47,14 @@ function isRollbackToClientReview(from: TaskStatus, to: TaskStatus): boolean {
 
 export default function HomePage() {
   const TASKS_PER_PAGE = 25;
-  const [theme, setTheme] = useState<AppTheme>(() => {
-    if (typeof window === "undefined") return "dark";
-    const saved = window.localStorage.getItem("project-tracker-theme");
-    if (saved === "dark" || saved === "light") return saved;
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  });
+  const [theme, setTheme] = useState<AppTheme>("dark");
   const [tasks, setTasks] = useState<ProjectTask[]>([]);
+  const [weeklyPlans, setWeeklyPlans] = useState<WeeklyPlan[]>([]);
   const [taskMetaById, setTaskMetaById] = useState<TaskMetaById>({});
   const [users, setUsers] = useState<AppUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
-  const [activeTab, setActiveTab] = useState<"add" | "list">("add");
+  const [activeTab, setActiveTab] = useState<"requests" | "weekly">("requests");
+  const [requestTab, setRequestTab] = useState<"add" | "list">("add");
   const [listPage, setListPage] = useState(1);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
 
@@ -128,7 +129,11 @@ export default function HomePage() {
     let active = true;
 
     const loadData = async () => {
-      const [initialTasks, initialUsers] = await Promise.all([taskRepository.read(), readUsers()]);
+      const [initialTasks, initialUsers, initialWeeklyPlans] = await Promise.all([
+        taskRepository.read(),
+        readUsers(),
+        weeklyPlanRepository.read()
+      ]);
       const sessionUser = await readSessionUser(initialUsers);
       const initialMeta = await readTaskMetaById();
       const synced = ensureTaskMetaSync(initialTasks, sessionUser, initialMeta);
@@ -136,6 +141,7 @@ export default function HomePage() {
       if (!active) return;
 
       setTasks(initialTasks);
+      setWeeklyPlans(initialWeeklyPlans);
       setUsers(initialUsers);
       setCurrentUser(sessionUser);
       setTaskMetaById(synced.next);
@@ -152,6 +158,17 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
+    const saved = window.localStorage.getItem("project-tracker-theme");
+    if (saved === "dark" || saved === "light") {
+      setTheme(saved);
+      return;
+    }
+
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    setTheme(prefersDark ? "dark" : "light");
+  }, []);
+
+  useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     window.localStorage.setItem("project-tracker-theme", theme);
   }, [theme]);
@@ -159,7 +176,11 @@ export default function HomePage() {
   useEffect(() => {
     const applyFromUrl = () => {
       const params = new URLSearchParams(window.location.search);
-      setActiveTab(params.get("tab") === "list" ? "list" : "add");
+      const tab = params.get("tab");
+      const rtab = params.get("rtab");
+
+      setActiveTab(tab === "weekly" ? "weekly" : "requests");
+      setRequestTab(rtab === "list" ? "list" : "add");
     };
 
     applyFromUrl();
@@ -167,10 +188,17 @@ export default function HomePage() {
     return () => window.removeEventListener("popstate", applyFromUrl);
   }, []);
 
-  const navigateTab = (tab: "add" | "list") => {
-    const url = tab === "list" ? "/?tab=list" : "/?tab=add";
+  const navigateMainTab = (tab: "requests" | "weekly") => {
+    const url = tab === "weekly" ? "/?tab=weekly" : `/?tab=requests&rtab=${requestTab}`;
     window.history.pushState({}, "", url);
     setActiveTab(tab);
+  };
+
+  const navigateRequestTab = (tab: "add" | "list") => {
+    const url = `/?tab=requests&rtab=${tab}`;
+    window.history.pushState({}, "", url);
+    setRequestTab(tab);
+    setActiveTab("requests");
   };
 
   const visibleTasks = useMemo(() => {
@@ -291,26 +319,15 @@ export default function HomePage() {
 
     const nextMeta = {
       ...taskMetaById,
-      [task.id]:
-        currentUser.role === "client"
-          ? {
-              taskId: task.id,
-              ownerUserId: currentUser.id,
-              approvalStatus: "pending" as const,
-              decisionNote: undefined,
-              decidedByUserId: undefined,
-              decidedAt: undefined,
-              updatedAt: nowIso
-            }
-          : metaForNewTask(task.id, currentUser)
+      [task.id]: metaForNewTask(task.id, currentUser)
     };
     persistTaskMeta(nextMeta);
 
     openModal(
-      currentUser.role === "client" ? "Request Submitted" : "Request Added",
-      currentUser.role === "client"
-        ? "Task created. Admin approval is required for final confirmation."
-        : "New change request has been added successfully.",
+      currentUser.role === "super_user" ? "Request Added" : "Request Submitted",
+      currentUser.role === "super_user"
+        ? "New change request has been added successfully."
+        : "Task created. Super admin approval is required for final confirmation.",
       "success"
     );
   };
@@ -399,6 +416,7 @@ export default function HomePage() {
           status: nextStatus,
           estimatedHours: nextEstimated,
           deliveryDate,
+          clientReviewDate: isRollback ? effectiveStatusDate : task.clientReviewDate,
           confirmedDate: isRollback ? undefined : task.confirmedDate,
           approvedDate: isRollback ? undefined : task.approvedDate,
           startDate: isRollback ? undefined : task.startDate,
@@ -535,6 +553,7 @@ export default function HomePage() {
       hourlyRate?: number;
       hourReason?: string;
       deliveryDate?: string;
+      clientReviewDate?: string;
       startDate?: string;
       confirmedDate?: string;
       approvedDate?: string;
@@ -633,6 +652,7 @@ export default function HomePage() {
     }
 
     const transitionDateByStatus: Partial<Record<TaskStatus, string | undefined>> = {
+      "Client Review": payload.clientReviewDate,
       Confirmed: payload.confirmedDate,
       Approved: payload.approvedDate,
       "Working On It": payload.startDate,
@@ -652,6 +672,7 @@ export default function HomePage() {
       const nowIso = new Date().toISOString();
       const nextEstimated = isRollback ? 0 : payload.estimatedHours;
       const currentIndex = statusIndex(payload.status);
+      const clientReviewDate = currentIndex >= statusIndex("Client Review") ? payload.clientReviewDate : undefined;
       const startDate = currentIndex >= statusIndex("Working On It") ? payload.startDate : undefined;
       const confirmedDate = currentIndex >= statusIndex("Confirmed") ? payload.confirmedDate : undefined;
       const approvedDate = currentIndex >= statusIndex("Approved") ? payload.approvedDate : undefined;
@@ -690,6 +711,7 @@ export default function HomePage() {
         loggedHours: payload.loggedHours,
         hourlyRate: payload.hourlyRate,
         deliveryDate: isRollback ? undefined : payload.deliveryDate,
+        clientReviewDate: isRollback ? transitionDate : clientReviewDate,
         startDate: isRollback ? undefined : startDate,
         confirmedDate: isRollback ? undefined : confirmedDate,
         approvedDate: isRollback ? undefined : approvedDate,
@@ -815,6 +837,61 @@ export default function HomePage() {
 
     setUsers(result.users);
     openModal("User Deleted", result.message, "success");
+  };
+
+  const handleWeeklyPlanCreate = async (input: WeeklyPlanInput) => {
+    if (!currentUser || !isCurrentSuperUser) {
+      openModal("Access Denied", "Only super user can manage weekly plans.", "error");
+      return;
+    }
+
+    try {
+      const created = await weeklyPlanRepository.create({
+        ...input,
+        id: createId(),
+        createdByUserId: currentUser.id
+      });
+
+      setWeeklyPlans((prev) => [created, ...prev]);
+      openModal("Weekly Plan Created", "Product manager weekly plan has been saved.", "success");
+    } catch (error) {
+      openModal("Save Failed", error instanceof Error ? error.message : "Could not save weekly plan to database.", "error");
+    }
+  };
+
+  const handleWeeklyPlanUpdate = async (planId: string, input: WeeklyPlanInput) => {
+    if (!currentUser || !isCurrentSuperUser) {
+      openModal("Access Denied", "Only super user can manage weekly plans.", "error");
+      return;
+    }
+
+    try {
+      const updated = await weeklyPlanRepository.update(planId, input);
+      if (!updated) {
+        openModal("Not Found", "Weekly plan record was not found.", "error");
+        return;
+      }
+
+      setWeeklyPlans((prev) => prev.map((plan) => (plan.id === planId ? updated : plan)));
+      openModal("Weekly Plan Updated", "Weekly plan has been updated.", "success");
+    } catch (error) {
+      openModal("Update Failed", error instanceof Error ? error.message : "Could not update weekly plan in database.", "error");
+    }
+  };
+
+  const handleWeeklyPlanDelete = async (planId: string) => {
+    if (!currentUser || !isCurrentSuperUser) {
+      openModal("Access Denied", "Only super user can manage weekly plans.", "error");
+      return;
+    }
+
+    try {
+      await weeklyPlanRepository.remove(planId);
+      setWeeklyPlans((prev) => prev.filter((plan) => plan.id !== planId));
+      openModal("Weekly Plan Deleted", "Weekly plan has been deleted.", "success");
+    } catch (error) {
+      openModal("Delete Failed", error instanceof Error ? error.message : "Could not delete weekly plan from database.", "error");
+    }
   };
 
   const handleLoginSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -1088,62 +1165,95 @@ export default function HomePage() {
           <div className="tab-header">
             <button
               type="button"
-              className={activeTab === "add" ? "tab-btn active" : "tab-btn"}
-              onClick={() => navigateTab("add")}
+              className={activeTab === "requests" ? "tab-btn active" : "tab-btn"}
+              onClick={() => navigateMainTab("requests")}
             >
-              Add Request
+              Requests
             </button>
-            <button
-              type="button"
-              className={activeTab === "list" ? "tab-btn active" : "tab-btn"}
-              onClick={() => navigateTab("list")}
-            >
-              Request List
-            </button>
+            {isCurrentSuperUser ? (
+              <button
+                type="button"
+                className={activeTab === "weekly" ? "tab-btn active" : "tab-btn"}
+                onClick={() => navigateMainTab("weekly")}
+              >
+                Weekly Plans
+              </button>
+            ) : null}
           </div>
 
-          {activeTab === "add" ? (
-            <TaskForm onSubmit={addTask} onNotify={openModal} />
-          ) : (
+          {activeTab === "requests" ? (
             <div className="stack">
-              <TaskFilters filters={filters} onChange={setFilters} />
-              <div className="row between gap">
-                <small className="muted">
-                  Showing {paginatedVisibleTasks.length} of {visibleTasks.length} requests
-                </small>
-                <div className="row gap">
-                  <button
-                    type="button"
-                    className="secondary"
-                    disabled={listPage <= 1}
-                    onClick={() => setListPage((prev) => Math.max(prev - 1, 1))}
-                  >
-                    Prev
-                  </button>
-                  <small className="muted">
-                    Page {totalListPages === 0 ? 0 : listPage} / {totalListPages}
-                  </small>
-                  <button
-                    type="button"
-                    className="secondary"
-                    disabled={listPage >= totalListPages}
-                    onClick={() => setListPage((prev) => Math.min(prev + 1, totalListPages))}
-                  >
-                    Next
-                  </button>
-                </div>
+              <div className="tab-header">
+                <button
+                  type="button"
+                  className={requestTab === "add" ? "tab-btn active" : "tab-btn"}
+                  onClick={() => navigateRequestTab("add")}
+                >
+                  Add Request
+                </button>
+                <button
+                  type="button"
+                  className={requestTab === "list" ? "tab-btn active" : "tab-btn"}
+                  onClick={() => navigateRequestTab("list")}
+                >
+                  Request List
+                </button>
               </div>
-              <TaskList
-                tasks={paginatedVisibleTasks}
-                viewerRole={currentUser.role}
-                viewerUserId={currentUser.id}
-                ownerByTaskId={ownerByTaskId}
-                approvalByTaskId={approvalByTaskId}
-                onTaskUpdate={updateTask}
-                onRequestDelete={requestDeleteTask}
-                onNotify={openModal}
-              />
+
+              {requestTab === "add" ? (
+                <TaskForm onSubmit={addTask} onNotify={openModal} />
+              ) : (
+                <>
+                  <TaskFilters filters={filters} onChange={setFilters} />
+                  <div className="row between gap">
+                    <small className="muted">
+                      Showing {paginatedVisibleTasks.length} of {visibleTasks.length} requests
+                    </small>
+                    <div className="row gap">
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={listPage <= 1}
+                        onClick={() => setListPage((prev) => Math.max(prev - 1, 1))}
+                      >
+                        Prev
+                      </button>
+                      <small className="muted">
+                        Page {totalListPages === 0 ? 0 : listPage} / {totalListPages}
+                      </small>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={listPage >= totalListPages}
+                        onClick={() => setListPage((prev) => Math.min(prev + 1, totalListPages))}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                  <TaskList
+                    tasks={paginatedVisibleTasks}
+                    viewerRole={currentUser.role}
+                    viewerUserId={currentUser.id}
+                    ownerByTaskId={ownerByTaskId}
+                    approvalByTaskId={approvalByTaskId}
+                    onTaskUpdate={updateTask}
+                    onRequestDelete={requestDeleteTask}
+                    onNotify={openModal}
+                  />
+                </>
+              )}
             </div>
+          ) : isCurrentSuperUser ? (
+            <WeeklyPlanSection
+              plans={weeklyPlans}
+              onCreate={handleWeeklyPlanCreate}
+              onUpdate={handleWeeklyPlanUpdate}
+              onDelete={handleWeeklyPlanDelete}
+              onNotify={openModal}
+            />
+          ) : (
+            <div className="card">Access denied.</div>
           )}
         </section>
       </section>

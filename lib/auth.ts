@@ -65,13 +65,10 @@ async function upsertUserProfileFromAuth(input: {
       email: input.email,
       role: input.role,
       status: input.status,
-      approved_by_user_id: null,
       approved_at: input.status === "approved" ? nowIso : null,
-      rejection_reason: null,
-      created_at: nowIso,
       updated_at: nowIso
     },
-    { onConflict: "email" }
+    { onConflict: "email", ignoreDuplicates: true }
   );
 
   if (error) {

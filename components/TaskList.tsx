@@ -17,6 +17,7 @@ type EditPayload = {
   hourlyRate?: number;
   hourReason?: string;
   deliveryDate?: string;
+  clientReviewDate?: string;
   startDate?: string;
   confirmedDate?: string;
   approvedDate?: string;
@@ -75,6 +76,7 @@ export default function TaskList({
   const [editHourReasonByTask, setEditHourReasonByTask] = useState<Record<string, string>>({});
 
   const [editDeliveryByTask, setEditDeliveryByTask] = useState<Record<string, string>>({});
+  const [editClientReviewByTask, setEditClientReviewByTask] = useState<Record<string, string>>({});
   const [editStartByTask, setEditStartByTask] = useState<Record<string, string>>({});
   const [editConfirmedByTask, setEditConfirmedByTask] = useState<Record<string, string>>({});
   const [editApprovedByTask, setEditApprovedByTask] = useState<Record<string, string>>({});
@@ -142,6 +144,7 @@ export default function TaskList({
       hourlyRate: isClientViewer ? task.hourlyRate : nextRate,
       hourReason: isClientViewer ? undefined : (editHourReasonByTask[task.id] ?? "").trim() || undefined,
       deliveryDate: isClientViewer ? task.deliveryDate : (editDeliveryByTask[task.id] ?? "").trim() || undefined,
+      clientReviewDate: isClientViewer ? task.clientReviewDate : (editClientReviewByTask[task.id] ?? "").trim() || undefined,
       startDate: isClientViewer ? task.startDate : (editStartByTask[task.id] ?? "").trim() || undefined,
       confirmedDate: isClientViewer ? task.confirmedDate : (editConfirmedByTask[task.id] ?? "").trim() || undefined,
       approvedDate: isClientViewer ? task.approvedDate : (editApprovedByTask[task.id] ?? "").trim() || undefined,
@@ -178,6 +181,7 @@ export default function TaskList({
     setEditHourReasonByTask((prev) => ({ ...prev, [task.id]: "" }));
 
     setEditDeliveryByTask((prev) => ({ ...prev, [task.id]: task.deliveryDate || "" }));
+    setEditClientReviewByTask((prev) => ({ ...prev, [task.id]: task.clientReviewDate || "" }));
     setEditStartByTask((prev) => ({ ...prev, [task.id]: task.startDate || "" }));
     setEditConfirmedByTask((prev) => ({ ...prev, [task.id]: task.confirmedDate || "" }));
     setEditApprovedByTask((prev) => ({ ...prev, [task.id]: task.approvedDate || "" }));
@@ -208,6 +212,7 @@ export default function TaskList({
 
               const selectedStatus = editStatusByTask[task.id] ?? task.status;
               const selectedStatusIndex = STATUSES.indexOf(selectedStatus);
+              const canEditClientReviewDate = selectedStatusIndex >= STATUSES.indexOf("Client Review");
               const canEditStartDate = selectedStatusIndex >= STATUSES.indexOf("Working On It");
               const canEditConfirmedDate = selectedStatusIndex >= STATUSES.indexOf("Confirmed");
               const canEditApprovedDate = selectedStatusIndex >= STATUSES.indexOf("Approved");
@@ -365,6 +370,15 @@ export default function TaskList({
                                     value={editStartByTask[task.id] ?? task.startDate ?? ""}
                                     disabled={!canEditStartDate}
                                     onChange={(e) => setEditStartByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
+                                  />
+                                </label>
+                                <label>
+                                  Client Review Date
+                                  <input
+                                    type="date"
+                                    value={editClientReviewByTask[task.id] ?? task.clientReviewDate ?? ""}
+                                    disabled={!canEditClientReviewDate}
+                                    onChange={(e) => setEditClientReviewByTask((prev) => ({ ...prev, [task.id]: e.target.value }))}
                                   />
                                 </label>
                                 <label>
