@@ -22,6 +22,7 @@ type DbTaskRow = {
   status: string;
   eta_date: string | null;
   delivery_date: string | null;
+  client_review_date: string | null;
   confirmed_date: string | null;
   approved_date: string | null;
   estimated_hours: number;
@@ -135,6 +136,7 @@ const normalizeTask = (rawTask: unknown): ProjectTask | null => {
     status: isStatus(rawTask.status) ? rawTask.status : "Requested",
     etaDate: pickOptionalString(rawTask, ["etaDate", "eta_date"]),
     deliveryDate: pickOptionalString(rawTask, ["deliveryDate", "delivery_date"]),
+    clientReviewDate: pickOptionalString(rawTask, ["clientReviewDate", "client_review_date"]),
     confirmedDate: pickOptionalString(rawTask, ["confirmedDate", "confirmed_date"]),
     approvedDate: pickOptionalString(rawTask, ["approvedDate", "approved_date"]),
     estimatedHours: numberOrDefault(rawTask.estimatedHours ?? rawTask.estimated_hours, 0),
@@ -163,6 +165,7 @@ const taskToDbRow = (task: ProjectTask): DbTaskRow => ({
   status: task.status,
   eta_date: task.etaDate ?? null,
   delivery_date: task.deliveryDate ?? null,
+  client_review_date: task.clientReviewDate ?? null,
   confirmed_date: task.confirmedDate ?? null,
   approved_date: task.approvedDate ?? null,
   estimated_hours: task.estimatedHours,
@@ -184,6 +187,7 @@ const taskToDbUpdate = (task: ProjectTask): Omit<DbTaskRow, "id" | "created_at">
   status: task.status,
   eta_date: task.etaDate ?? null,
   delivery_date: task.deliveryDate ?? null,
+  client_review_date: task.clientReviewDate ?? null,
   confirmed_date: task.confirmedDate ?? null,
   approved_date: task.approvedDate ?? null,
   estimated_hours: task.estimatedHours,
@@ -208,6 +212,7 @@ function taskHasChanged(previous: ProjectTask | undefined, next: ProjectTask): b
     previous.loggedHours !== next.loggedHours ||
     previous.hourlyRate !== next.hourlyRate ||
     previous.deliveryDate !== next.deliveryDate ||
+    previous.clientReviewDate !== next.clientReviewDate ||
     previous.startDate !== next.startDate ||
     previous.confirmedDate !== next.confirmedDate ||
     previous.approvedDate !== next.approvedDate ||

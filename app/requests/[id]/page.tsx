@@ -121,6 +121,10 @@ export default function RequestDetailsPage() {
             <p>{formatShortDate(task.deliveryDate)}</p>
           </div>
           <div>
+            <small>Client Review Date</small>
+            <p>{formatShortDate(task.clientReviewDate)}</p>
+          </div>
+          <div>
             <small>Confirmed Date</small>
             <p>{formatShortDate(task.confirmedDate)}</p>
           </div>

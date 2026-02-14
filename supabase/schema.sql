@@ -1,6 +1,9 @@
 begin;
 
--- Current task state (one row per task)
+-- ---------------------------------------------------------------------------
+-- Core tables
+-- ---------------------------------------------------------------------------
+
 create table if not exists public.project_tasks (
   id text primary key,
   title text not null,
@@ -11,6 +14,7 @@ create table if not exists public.project_tasks (
   status text not null,
   eta_date date,
   delivery_date date,
+  client_review_date date,
   confirmed_date date,
   approved_date date,
   estimated_hours numeric not null default 0,
@@ -23,30 +27,28 @@ create table if not exists public.project_tasks (
   updated_at timestamptz not null
 );
 
-alter table public.project_tasks enable row level security;
+alter table public.project_tasks add column if not exists client_review_date date;
 
-drop policy if exists "project tasks select" on public.project_tasks;
-create policy "project tasks select" on public.project_tasks
-for select to authenticated
-using (auth.role() = 'authenticated');
+alter table public.project_tasks drop constraint if exists project_tasks_status_check;
+alter table public.project_tasks
+  add constraint project_tasks_status_check
+  check (status in ('Requested', 'Client Review', 'Confirmed', 'Approved', 'Working On It', 'Completed', 'Handover'));
 
-drop policy if exists "project tasks insert" on public.project_tasks;
-create policy "project tasks insert" on public.project_tasks
-for insert to authenticated
-with check (auth.role() = 'authenticated');
+alter table public.project_tasks drop constraint if exists project_tasks_estimated_hours_non_negative;
+alter table public.project_tasks
+  add constraint project_tasks_estimated_hours_non_negative
+  check (estimated_hours >= 0);
 
-drop policy if exists "project tasks update" on public.project_tasks;
-create policy "project tasks update" on public.project_tasks
-for update to authenticated
-using (auth.role() = 'authenticated')
-with check (auth.role() = 'authenticated');
+alter table public.project_tasks drop constraint if exists project_tasks_logged_hours_non_negative;
+alter table public.project_tasks
+  add constraint project_tasks_logged_hours_non_negative
+  check (logged_hours >= 0);
 
-drop policy if exists "project tasks delete" on public.project_tasks;
-create policy "project tasks delete" on public.project_tasks
-for delete to authenticated
-using (auth.role() = 'authenticated');
+alter table public.project_tasks drop constraint if exists project_tasks_hourly_rate_non_negative;
+alter table public.project_tasks
+  add constraint project_tasks_hourly_rate_non_negative
+  check (hourly_rate is null or hourly_rate >= 0);
 
--- Status/event history table
 create table if not exists public.task_events (
   id bigserial primary key,
   task_id text not null references public.project_tasks(id) on delete cascade,
@@ -65,30 +67,6 @@ create unique index if not exists ux_task_events_source
 create index if not exists ix_task_events_task_changed_at
   on public.task_events(task_id, changed_at desc);
 
-alter table public.task_events enable row level security;
-
-drop policy if exists "task events select" on public.task_events;
-create policy "task events select" on public.task_events
-for select to authenticated
-using (auth.role() = 'authenticated');
-
-drop policy if exists "task events insert" on public.task_events;
-create policy "task events insert" on public.task_events
-for insert to authenticated
-with check (auth.role() = 'authenticated');
-
-drop policy if exists "task events update" on public.task_events;
-create policy "task events update" on public.task_events
-for update to authenticated
-using (auth.role() = 'authenticated')
-with check (auth.role() = 'authenticated');
-
-drop policy if exists "task events delete" on public.task_events;
-create policy "task events delete" on public.task_events
-for delete to authenticated
-using (auth.role() = 'authenticated');
-
--- Estimated hour revision history table
 create table if not exists public.task_hour_revisions (
   id bigserial primary key,
   task_id text not null references public.project_tasks(id) on delete cascade,
@@ -107,30 +85,6 @@ create unique index if not exists ux_task_hour_revisions_source
 create index if not exists ix_task_hour_revisions_task_changed_at
   on public.task_hour_revisions(task_id, changed_at desc);
 
-alter table public.task_hour_revisions enable row level security;
-
-drop policy if exists "task hour revisions select" on public.task_hour_revisions;
-create policy "task hour revisions select" on public.task_hour_revisions
-for select to authenticated
-using (auth.role() = 'authenticated');
-
-drop policy if exists "task hour revisions insert" on public.task_hour_revisions;
-create policy "task hour revisions insert" on public.task_hour_revisions
-for insert to authenticated
-with check (auth.role() = 'authenticated');
-
-drop policy if exists "task hour revisions update" on public.task_hour_revisions;
-create policy "task hour revisions update" on public.task_hour_revisions
-for update to authenticated
-using (auth.role() = 'authenticated')
-with check (auth.role() = 'authenticated');
-
-drop policy if exists "task hour revisions delete" on public.task_hour_revisions;
-create policy "task hour revisions delete" on public.task_hour_revisions
-for delete to authenticated
-using (auth.role() = 'authenticated');
-
--- App users (admin/client registration + admin approval)
 create table if not exists public.app_users (
   id text primary key,
   name text not null,
@@ -144,7 +98,6 @@ create table if not exists public.app_users (
   updated_at timestamptz not null default now()
 );
 
--- Supabase Auth handles credentials; app_users must not keep password fields.
 alter table public.app_users drop column if exists password;
 
 alter table public.app_users drop constraint if exists app_users_role_check;
@@ -155,36 +108,79 @@ alter table public.app_users
 create index if not exists ix_app_users_status on public.app_users(status);
 create index if not exists ix_app_users_role on public.app_users(role);
 
-alter table public.app_users enable row level security;
-
-drop policy if exists "app users select" on public.app_users;
-create policy "app users select" on public.app_users
-for select to authenticated
-using (
-  lower(email) = lower(coalesce(auth.jwt()->>'email', ''))
-  or lower(coalesce(auth.jwt()->>'email', '')) = 'abdullahalnomancse@gmail.com'
+create table if not exists public.weekly_plans (
+  id text primary key,
+  week_start_date date not null,
+  week_end_date date not null,
+  daily_updates jsonb not null default '[]'::jsonb,
+  created_by_user_id text not null references public.app_users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint weekly_plans_week_range check (week_start_date <= week_end_date)
 );
 
-drop policy if exists "app users insert" on public.app_users;
-create policy "app users insert" on public.app_users
-for insert to authenticated
-with check (
-  role = 'client'
-  or lower(coalesce(auth.jwt()->>'email', '')) = 'abdullahalnomancse@gmail.com'
-);
+alter table public.weekly_plans add column if not exists week_start_date date;
+alter table public.weekly_plans add column if not exists week_end_date date;
+alter table public.weekly_plans add column if not exists daily_updates jsonb not null default '[]'::jsonb;
 
-drop policy if exists "app users update" on public.app_users;
-create policy "app users update" on public.app_users
-for update to authenticated
-using (lower(coalesce(auth.jwt()->>'email', '')) = 'abdullahalnomancse@gmail.com')
-with check (lower(coalesce(auth.jwt()->>'email', '')) = 'abdullahalnomancse@gmail.com');
+-- Remove legacy columns from older weekly planner schema.
+alter table public.weekly_plans drop column if exists title;
+alter table public.weekly_plans drop column if exists description;
+alter table public.weekly_plans drop column if exists notes;
+alter table public.weekly_plans drop column if exists objectives;
+alter table public.weekly_plans drop column if exists task_feature_name;
+alter table public.weekly_plans drop column if exists category_module;
+alter table public.weekly_plans drop column if exists context_what;
+alter table public.weekly_plans drop column if exists context_why;
+alter table public.weekly_plans drop column if exists assigned_to;
+alter table public.weekly_plans drop column if exists status;
+alter table public.weekly_plans drop column if exists complexity_estimate;
+alter table public.weekly_plans drop column if exists sprint_week_no;
+alter table public.weekly_plans drop column if exists target_start_date;
+alter table public.weekly_plans drop column if exists target_end_date;
+alter table public.weekly_plans drop column if exists actual_completion_date;
+alter table public.weekly_plans drop column if exists blockers_dependencies;
 
-drop policy if exists "app users delete" on public.app_users;
-create policy "app users delete" on public.app_users
-for delete to authenticated
-using (lower(coalesce(auth.jwt()->>'email', '')) = 'abdullahalnomancse@gmail.com');
+-- Hard cleanup: keep only supported weekly_plans columns.
+do $$
+declare
+  col record;
+begin
+  for col in
+    select c.column_name
+    from information_schema.columns c
+    where c.table_schema = 'public'
+      and c.table_name = 'weekly_plans'
+      and c.column_name not in (
+        'id',
+        'week_start_date',
+        'week_end_date',
+        'daily_updates',
+        'created_by_user_id',
+        'created_at',
+        'updated_at'
+      )
+  loop
+    execute format('alter table public.weekly_plans drop column if exists %I', col.column_name);
+  end loop;
+end $$;
 
--- Task-level ownership and approval state
+update public.weekly_plans
+set
+  week_start_date = coalesce(week_start_date, current_date),
+  week_end_date = coalesce(week_end_date, current_date),
+  daily_updates = coalesce(daily_updates, '[]'::jsonb)
+where true;
+
+alter table public.weekly_plans alter column week_start_date set not null;
+alter table public.weekly_plans alter column week_end_date set not null;
+
+alter table public.weekly_plans drop constraint if exists weekly_plans_week_range;
+alter table public.weekly_plans
+  add constraint weekly_plans_week_range check (week_start_date <= week_end_date);
+
+create index if not exists ix_weekly_plans_week_start on public.weekly_plans(week_start_date desc);
+
 create table if not exists public.task_access_meta (
   task_id text primary key references public.project_tasks(id) on delete cascade,
   owner_user_id text references public.app_users(id),
@@ -198,32 +194,8 @@ create table if not exists public.task_access_meta (
 create index if not exists ix_task_access_meta_owner on public.task_access_meta(owner_user_id);
 create index if not exists ix_task_access_meta_approval on public.task_access_meta(approval_status);
 
-alter table public.task_access_meta enable row level security;
-
-drop policy if exists "task access meta select" on public.task_access_meta;
-create policy "task access meta select" on public.task_access_meta
-for select to authenticated
-using (auth.role() = 'authenticated');
-
-drop policy if exists "task access meta insert" on public.task_access_meta;
-create policy "task access meta insert" on public.task_access_meta
-for insert to authenticated
-with check (auth.role() = 'authenticated');
-
-drop policy if exists "task access meta update" on public.task_access_meta;
-create policy "task access meta update" on public.task_access_meta
-for update to authenticated
-using (auth.role() = 'authenticated')
-with check (auth.role() = 'authenticated');
-
-drop policy if exists "task access meta delete" on public.task_access_meta;
-create policy "task access meta delete" on public.task_access_meta
-for delete to authenticated
-using (auth.role() = 'authenticated');
-
 -- ---------------------------------------------------------------------------
--- Strict RLS override (manager/owner-aware)
--- Keeps anon blocked and prevents any authenticated user from editing all rows.
+-- RLS helpers
 -- ---------------------------------------------------------------------------
 
 create or replace function public.app_current_user_id()
@@ -271,10 +243,59 @@ as $$
   );
 $$;
 
+create or replace function public.app_can_view_task(p_task_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    public.app_is_manager()
+    or exists (
+      select 1
+      from public.task_access_meta m
+      where m.task_id = p_task_id
+        and m.owner_user_id = public.app_current_user_id()
+    );
+$$;
+
+create or replace function public.app_can_write_task(p_task_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    public.app_is_manager()
+    or exists (
+      select 1
+      from public.task_access_meta m
+      where m.task_id = p_task_id
+        and m.owner_user_id = public.app_current_user_id()
+    );
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Enable RLS
+-- ---------------------------------------------------------------------------
+
+alter table public.project_tasks enable row level security;
+alter table public.task_events enable row level security;
+alter table public.task_hour_revisions enable row level security;
+alter table public.app_users enable row level security;
+alter table public.weekly_plans enable row level security;
+alter table public.task_access_meta enable row level security;
+
+-- ---------------------------------------------------------------------------
+-- Policies
+-- ---------------------------------------------------------------------------
+
 drop policy if exists "project tasks select" on public.project_tasks;
 create policy "project tasks select" on public.project_tasks
 for select to authenticated
-using (public.app_current_user_id() is not null);
+using (public.app_can_view_task(id));
 
 drop policy if exists "project tasks insert" on public.project_tasks;
 create policy "project tasks insert" on public.project_tasks
@@ -284,8 +305,8 @@ with check (public.app_current_user_id() is not null);
 drop policy if exists "project tasks update" on public.project_tasks;
 create policy "project tasks update" on public.project_tasks
 for update to authenticated
-using (auth.role() = 'authenticated')
-with check (auth.role() = 'authenticated');
+using (public.app_can_write_task(id))
+with check (public.app_can_write_task(id));
 
 drop policy if exists "project tasks delete" on public.project_tasks;
 create policy "project tasks delete" on public.project_tasks
@@ -295,44 +316,44 @@ using (public.app_is_super_user());
 drop policy if exists "task events select" on public.task_events;
 create policy "task events select" on public.task_events
 for select to authenticated
-using (auth.role() = 'authenticated');
+using (public.app_can_view_task(task_id));
 
 drop policy if exists "task events insert" on public.task_events;
 create policy "task events insert" on public.task_events
 for insert to authenticated
-with check (auth.role() = 'authenticated');
+with check (public.app_can_write_task(task_id));
 
 drop policy if exists "task events update" on public.task_events;
 create policy "task events update" on public.task_events
 for update to authenticated
-using (auth.role() = 'authenticated')
-with check (auth.role() = 'authenticated');
+using (public.app_can_write_task(task_id))
+with check (public.app_can_write_task(task_id));
 
 drop policy if exists "task events delete" on public.task_events;
 create policy "task events delete" on public.task_events
 for delete to authenticated
-using (auth.role() = 'authenticated');
+using (public.app_is_super_user());
 
 drop policy if exists "task hour revisions select" on public.task_hour_revisions;
 create policy "task hour revisions select" on public.task_hour_revisions
 for select to authenticated
-using (auth.role() = 'authenticated');
+using (public.app_can_view_task(task_id));
 
 drop policy if exists "task hour revisions insert" on public.task_hour_revisions;
 create policy "task hour revisions insert" on public.task_hour_revisions
 for insert to authenticated
-with check (auth.role() = 'authenticated');
+with check (public.app_can_write_task(task_id));
 
 drop policy if exists "task hour revisions update" on public.task_hour_revisions;
 create policy "task hour revisions update" on public.task_hour_revisions
 for update to authenticated
-using (auth.role() = 'authenticated')
-with check (auth.role() = 'authenticated');
+using (public.app_can_write_task(task_id))
+with check (public.app_can_write_task(task_id));
 
 drop policy if exists "task hour revisions delete" on public.task_hour_revisions;
 create policy "task hour revisions delete" on public.task_hour_revisions
 for delete to authenticated
-using (auth.role() = 'authenticated');
+using (public.app_is_super_user());
 
 drop policy if exists "app users select" on public.app_users;
 create policy "app users select" on public.app_users
@@ -358,7 +379,64 @@ create policy "app users delete" on public.app_users
 for delete to authenticated
 using (public.app_is_super_user());
 
--- Auto-create app_users profile when a new auth user registers.
+drop policy if exists "weekly plans select" on public.weekly_plans;
+create policy "weekly plans select" on public.weekly_plans
+for select to authenticated
+using (public.app_is_super_user());
+
+drop policy if exists "weekly plans insert" on public.weekly_plans;
+create policy "weekly plans insert" on public.weekly_plans
+for insert to authenticated
+with check (public.app_is_super_user());
+
+drop policy if exists "weekly plans update" on public.weekly_plans;
+create policy "weekly plans update" on public.weekly_plans
+for update to authenticated
+using (public.app_is_super_user())
+with check (public.app_is_super_user());
+
+drop policy if exists "weekly plans delete" on public.weekly_plans;
+create policy "weekly plans delete" on public.weekly_plans
+for delete to authenticated
+using (public.app_is_super_user());
+
+drop policy if exists "task access meta select" on public.task_access_meta;
+create policy "task access meta select" on public.task_access_meta
+for select to authenticated
+using (
+  public.app_is_manager()
+  or owner_user_id = public.app_current_user_id()
+);
+
+drop policy if exists "task access meta insert" on public.task_access_meta;
+create policy "task access meta insert" on public.task_access_meta
+for insert to authenticated
+with check (
+  public.app_is_manager()
+  or owner_user_id = public.app_current_user_id()
+);
+
+drop policy if exists "task access meta update" on public.task_access_meta;
+create policy "task access meta update" on public.task_access_meta
+for update to authenticated
+using (
+  public.app_is_manager()
+  or owner_user_id = public.app_current_user_id()
+)
+with check (
+  public.app_is_manager()
+  or owner_user_id = public.app_current_user_id()
+);
+
+drop policy if exists "task access meta delete" on public.task_access_meta;
+create policy "task access meta delete" on public.task_access_meta
+for delete to authenticated
+using (public.app_is_super_user());
+
+-- ---------------------------------------------------------------------------
+-- Auth -> app_users sync
+-- ---------------------------------------------------------------------------
+
 create or replace function public.sync_app_user_from_auth()
 returns trigger
 language plpgsql
@@ -423,30 +501,12 @@ create trigger trg_sync_app_user_from_auth
 after insert on auth.users
 for each row execute function public.sync_app_user_from_auth();
 
-drop policy if exists "task access meta select" on public.task_access_meta;
-create policy "task access meta select" on public.task_access_meta
-for select to authenticated
-using (auth.role() = 'authenticated');
+-- ---------------------------------------------------------------------------
+-- Legacy migrations
+-- ---------------------------------------------------------------------------
 
-drop policy if exists "task access meta insert" on public.task_access_meta;
-create policy "task access meta insert" on public.task_access_meta
-for insert to authenticated
-with check (auth.role() = 'authenticated');
-
-drop policy if exists "task access meta update" on public.task_access_meta;
-create policy "task access meta update" on public.task_access_meta
-for update to authenticated
-using (auth.role() = 'authenticated')
-with check (auth.role() = 'authenticated');
-
-drop policy if exists "task access meta delete" on public.task_access_meta;
-create policy "task access meta delete" on public.task_access_meta
-for delete to authenticated
-using (auth.role() = 'authenticated');
-
--- Migrate old snapshot-style table if it exists:
 -- project_tracker_state.tasks (json array) -> project_tasks rows
-do $$
+DO $$
 begin
   if exists (
     select 1
@@ -455,7 +515,7 @@ begin
   ) then
     insert into public.project_tasks (
       id, title, description, change_points, requested_date, client_name, status,
-      eta_date, delivery_date, confirmed_date, approved_date,
+      eta_date, delivery_date, client_review_date, confirmed_date, approved_date,
       estimated_hours, logged_hours, hourly_rate,
       start_date, completed_date, handover_date,
       created_at, updated_at
@@ -470,6 +530,7 @@ begin
       coalesce(task->>'status', 'Requested'),
       nullif(task->>'etaDate', '')::date,
       nullif(task->>'deliveryDate', '')::date,
+      nullif(task->>'clientReviewDate', '')::date,
       nullif(task->>'confirmedDate', '')::date,
       nullif(task->>'approvedDate', '')::date,
       coalesce((task->>'estimatedHours')::numeric, 0),
@@ -492,6 +553,7 @@ begin
       status = excluded.status,
       eta_date = excluded.eta_date,
       delivery_date = excluded.delivery_date,
+      client_review_date = excluded.client_review_date,
       confirmed_date = excluded.confirmed_date,
       approved_date = excluded.approved_date,
       estimated_hours = excluded.estimated_hours,
@@ -506,7 +568,7 @@ begin
 end $$;
 
 -- Migrate legacy json columns from project_tasks (if present)
-do $$
+DO $$
 begin
   if exists (
     select 1 from information_schema.columns

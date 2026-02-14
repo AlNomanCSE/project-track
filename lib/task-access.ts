@@ -65,38 +65,14 @@ export async function writeTaskMetaById(value: TaskMetaById): Promise<void> {
   if (!supabase) return;
 
   const rows = Object.values(value).map(metaToRow);
-  if (rows.length > 0) {
-    const { error: upsertError } = await supabase
-      .from("task_access_meta")
-      .upsert(rows, { onConflict: "task_id" });
+  if (rows.length === 0) return;
 
-    if (upsertError) {
-      console.warn("Supabase task meta upsert failed:", upsertError.message);
-      return;
-    }
-  }
-
-  const { data: existing, error: readError } = await supabase
+  const { error: upsertError } = await supabase
     .from("task_access_meta")
-    .select("task_id");
+    .upsert(rows, { onConflict: "task_id" });
 
-  if (readError) {
-    console.warn("Supabase task meta cleanup read failed:", readError.message);
-    return;
-  }
-
-  const keep = new Set(Object.keys(value));
-  const toDelete = (existing ?? []).map((row) => row.task_id as string).filter((id) => !keep.has(id));
-
-  if (toDelete.length > 0) {
-    const { error: deleteError } = await supabase
-      .from("task_access_meta")
-      .delete()
-      .in("task_id", toDelete);
-
-    if (deleteError) {
-      console.warn("Supabase task meta cleanup delete failed:", deleteError.message);
-    }
+  if (upsertError) {
+    console.warn("Supabase task meta upsert failed:", upsertError.message);
   }
 }
 
@@ -139,15 +115,15 @@ export function getVisibleTasks(tasks: ProjectTask[], _metaById: TaskMetaById, _
 
 export function metaForNewTask(taskId: string, user: AppUser): TaskAccessMeta {
   const nowIso = new Date().toISOString();
-  const isManager = user.role === "admin" || user.role === "super_user";
+  const isSuperUser = user.role === "super_user";
 
   return {
     taskId,
     ownerUserId: user.id,
-    approvalStatus: isManager ? "approved" : "pending",
-    decisionNote: isManager ? "Auto-approved by owner role" : undefined,
-    decidedByUserId: isManager ? user.id : undefined,
-    decidedAt: isManager ? nowIso : undefined,
+    approvalStatus: isSuperUser ? "approved" : "pending",
+    decisionNote: isSuperUser ? "Auto-approved by super user" : undefined,
+    decidedByUserId: isSuperUser ? user.id : undefined,
+    decidedAt: isSuperUser ? nowIso : undefined,
     updatedAt: nowIso
   };
 }

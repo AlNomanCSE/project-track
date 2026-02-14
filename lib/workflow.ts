@@ -18,6 +18,10 @@ export function applyStatusMetadata(task: ProjectTask, nextStatus: TaskStatus, s
   const effectiveDate = statusDate;
   if (!effectiveDate) return task;
 
+  if (nextStatus === "Client Review") {
+    task.clientReviewDate = effectiveDate;
+  }
+
   if (nextStatus === "Working On It") {
     task.startDate = effectiveDate;
   }
