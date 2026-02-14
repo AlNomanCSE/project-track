@@ -27,6 +27,8 @@ type EditPayload = {
 type Props = {
   tasks: ProjectTask[];
   viewerRole: UserRole;
+  viewerUserId: string;
+  ownerByTaskId: Record<string, string | undefined>;
   approvalByTaskId: Record<string, TaskApprovalStatus>;
   onTaskUpdate: (taskId: string, payload: EditPayload) => void;
   onRequestDelete: (taskId: string) => void;
@@ -42,12 +44,21 @@ function approvalLabel(status: TaskApprovalStatus | undefined) {
 export default function TaskList({
   tasks,
   viewerRole,
+  viewerUserId,
+  ownerByTaskId,
   approvalByTaskId,
   onTaskUpdate,
   onRequestDelete,
   onNotify
 }: Props) {
   const isClientViewer = viewerRole === "client";
+  const isSuperViewer = viewerRole === "super_user";
+  const canDeleteAnyTask = isSuperViewer;
+
+  const canEditTask = (taskId: string) => {
+    return ownerByTaskId[taskId] === viewerUserId;
+  };
+
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
 
   const [editTitleByTask, setEditTitleByTask] = useState<Record<string, string>>({});
@@ -147,6 +158,11 @@ export default function TaskList({
   };
 
   const startEdit = (task: ProjectTask) => {
+    if (!canEditTask(task.id)) {
+      onNotify("Access Denied", "You can edit only your own requests.", "error");
+      return;
+    }
+
     setEditingTaskId(task.id);
     setEditTitleByTask((prev) => ({ ...prev, [task.id]: task.title }));
     setEditClientByTask((prev) => ({ ...prev, [task.id]: task.clientName || "" }));
@@ -228,10 +244,12 @@ export default function TaskList({
                         <Link href={`/requests/${task.id}`} className="button-link">
                           Details
                         </Link>
-                        <button type="button" className="secondary" onClick={() => setEditConfirmTask(task)}>
-                          Edit
-                        </button>
-                        {!isClientViewer ? (
+                        {canEditTask(task.id) ? (
+                          <button type="button" className="secondary" onClick={() => setEditConfirmTask(task)}>
+                            Edit
+                          </button>
+                        ) : null}
+                        {canDeleteAnyTask ? (
                           <button type="button" className="danger" onClick={() => setDeleteConfirmStepOneTaskId(task.id)}>
                             Delete
                           </button>
@@ -496,13 +514,18 @@ export default function TaskList({
         onClose={() => setEditConfirmTask(null)}
         onConfirm={() => {
           if (editConfirmTask) {
+            if (!canEditTask(editConfirmTask.id)) {
+              onNotify("Access Denied", "You can edit only your own requests.", "error");
+              setEditConfirmTask(null);
+              return;
+            }
             startEdit(editConfirmTask);
           }
         }}
       />
 
       <PopupModal
-        open={!isClientViewer && deleteConfirmStepOneTaskId !== null}
+        open={canDeleteAnyTask && deleteConfirmStepOneTaskId !== null}
         title="Delete Request"
         message="Are you sure you want to delete this request?"
         variant="confirm"
@@ -516,7 +539,7 @@ export default function TaskList({
       />
 
       <PopupModal
-        open={!isClientViewer && deleteConfirmStepTwoTaskId !== null}
+        open={canDeleteAnyTask && deleteConfirmStepTwoTaskId !== null}
         title="Final Confirmation"
         message="Please confirm again. This delete action cannot be undone."
         variant="confirm"

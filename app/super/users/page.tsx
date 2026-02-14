@@ -252,6 +252,7 @@ export default function SuperUsersPage() {
                   <div>
                     <strong>{user.name}</strong>
                     <div className="muted">{user.email}</div>
+                    <div className="muted">Role: {user.role}</div>
                     <div className="muted">Status: {user.status}</div>
                   </div>
                   {user.id !== currentUser.id ? (
@@ -278,6 +279,7 @@ export default function SuperUsersPage() {
                   <div>
                     <strong>{user.name}</strong>
                     <div className="muted">{user.email}</div>
+                    <div className="muted">Role: {user.role}</div>
                     <div className="muted">Status: {user.status}</div>
                   </div>
                   <button type="button" className="danger" onClick={() => handleDeleteUser(user.id)}>
