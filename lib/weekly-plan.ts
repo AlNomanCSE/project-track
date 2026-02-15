@@ -14,7 +14,7 @@ type DbWeeklyPlanRow = {
   updated_at: string;
 };
 
-const VALID_WORK_AREAS: WeeklyDayWorkArea[] = ["Frontend", "Backend", "Frontend + Backend", "Other"];
+const VALID_WORK_AREAS: WeeklyDayWorkArea[] = ["Frontend", "Backend", "QA", "Frontend + Backend", "Other"];
 
 type CreateWeeklyPlanPayload = WeeklyPlanInput & {
   id: string;
@@ -34,6 +34,7 @@ function normalizeWorkArea(value: unknown): WeeklyDayWorkArea {
 
 function normalizeDailyUpdates(value: unknown): WeeklyPlanDailyUpdate[] {
   if (!Array.isArray(value)) return [];
+  const isValidTime = (time: unknown) => typeof time === "string" && /^\d{2}:\d{2}$/.test(time);
   const mapped = value
     .map((entry): WeeklyPlanDailyUpdate | null => {
       if (typeof entry !== "object" || entry === null) return null;
@@ -50,6 +51,8 @@ function normalizeDailyUpdates(value: unknown): WeeklyPlanDailyUpdate[] {
       const progressPercent = Number.isFinite(progressRaw)
         ? Math.min(Math.max(progressRaw, 0), 100)
         : undefined;
+      const officeCheckIn = isValidTime(record.officeCheckIn) ? (record.officeCheckIn as string) : undefined;
+      const officeCheckOut = isValidTime(record.officeCheckOut) ? (record.officeCheckOut as string) : undefined;
 
       return {
         id,
@@ -59,6 +62,8 @@ function normalizeDailyUpdates(value: unknown): WeeklyPlanDailyUpdate[] {
         workArea: normalizeWorkArea(record.workArea),
         spentHours,
         progressPercent,
+        officeCheckIn,
+        officeCheckOut,
         updatedAt: safeString(record.updatedAt, new Date().toISOString())
       };
     })

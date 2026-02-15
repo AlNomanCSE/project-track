@@ -90,7 +90,7 @@ export type TaskFilters = {
 export const WEEKLY_PLAN_STATUSES = ["Not Started", "In Progress", "Blocked", "Done"] as const;
 export type WeeklyPlanStatus = (typeof WEEKLY_PLAN_STATUSES)[number];
 
-export const WEEKLY_DAY_WORK_AREAS = ["Frontend", "Backend", "Frontend + Backend", "Other"] as const;
+export const WEEKLY_DAY_WORK_AREAS = ["Frontend", "Backend", "QA", "Frontend + Backend", "Other"] as const;
 export type WeeklyDayWorkArea = (typeof WEEKLY_DAY_WORK_AREAS)[number];
 
 export type WeeklyPlanDailyUpdate = {
@@ -101,6 +101,8 @@ export type WeeklyPlanDailyUpdate = {
   workArea: WeeklyDayWorkArea;
   spentHours?: number;
   progressPercent?: number;
+  officeCheckIn?: string;
+  officeCheckOut?: string;
   updatedAt: string;
 };
 
