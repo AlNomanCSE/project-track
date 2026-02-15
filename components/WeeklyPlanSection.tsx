@@ -30,9 +30,13 @@ type DayUpdateForm = {
   workArea: WeeklyDayWorkArea;
   spentHours: string;
   progressPercent: string;
+  officeCheckIn: string;
+  officeCheckOut: string;
 };
 
-const CORE_DEVELOPERS = ["Raihan", "Mainul", "Noman"] as const;
+const CORE_DEVELOPERS = ["Raihan", "Mainul", "Noman", "Imtiaz", "Mintu"] as const;
+const OFFICE_START_TIME = "10:00";
+const OFFICE_END_TIME = "19:00";
 
 function createId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -59,7 +63,9 @@ function initialDayUpdateForm(): DayUpdateForm {
     note: "",
     workArea: "Frontend",
     spentHours: "",
-    progressPercent: ""
+    progressPercent: "",
+    officeCheckIn: "",
+    officeCheckOut: ""
   };
 }
 
@@ -89,6 +95,28 @@ function groupDailyUpdatesByDate(updates: WeeklyPlanDailyUpdate[]) {
 function currentMonthValue() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function getAttendanceStatus(checkIn?: string, checkOut?: string) {
+  if (!checkIn && !checkOut) return "Not set";
+  if (!checkIn || !checkOut) return "Incomplete";
+
+  const isLate = checkIn > OFFICE_START_TIME;
+  const leftEarly = checkOut < OFFICE_END_TIME;
+
+  if (!isLate && !leftEarly) return "On time";
+  if (isLate && leftEarly) return "Late + Early leave";
+  if (isLate) return "Late";
+  return "Early leave";
 }
 
 export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete, onNotify }: Props) {
@@ -269,6 +297,16 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
       onNotify("Validation", "Completion percentage must be between 0 and 100.", "error");
       return;
     }
+    const checkIn = dayUpdateForm.officeCheckIn.trim();
+    const checkOut = dayUpdateForm.officeCheckOut.trim();
+    if ((checkIn && !checkOut) || (!checkIn && checkOut)) {
+      onNotify("Validation", "Please provide both check-in and check-out times.", "error");
+      return;
+    }
+    if (checkIn && checkOut && checkIn > checkOut) {
+      onNotify("Validation", "Check-out time cannot be earlier than check-in time.", "error");
+      return;
+    }
 
     const entry: WeeklyPlanDailyUpdate = {
       id: editingDayUpdateId || createId(),
@@ -278,6 +316,8 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
       workArea: dayUpdateForm.workArea,
       spentHours: spentHoursRaw ? spentHoursValue : undefined,
       progressPercent: progressRaw ? progressValue : undefined,
+      officeCheckIn: checkIn || undefined,
+      officeCheckOut: checkOut || undefined,
       updatedAt: new Date().toISOString()
     };
 
@@ -308,7 +348,9 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
       note: update.note,
       workArea: update.workArea,
       spentHours: update.spentHours === undefined ? "" : String(update.spentHours),
-      progressPercent: update.progressPercent === undefined ? "" : String(update.progressPercent)
+      progressPercent: update.progressPercent === undefined ? "" : String(update.progressPercent),
+      officeCheckIn: update.officeCheckIn ?? "",
+      officeCheckOut: update.officeCheckOut ?? ""
     });
   };
 
@@ -324,6 +366,257 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
     } catch {
       onNotify("Copy Failed", "Clipboard access failed. Please copy from report view manually.", "error");
     }
+  };
+
+  const downloadDayPdf = (plan: WeeklyPlan, date: string, updates: WeeklyPlanDailyUpdate[]) => {
+    if (updates.length === 0) {
+      onNotify("No Data", "No day updates found for PDF export.", "error");
+      return;
+    }
+
+    const rows = updates
+      .map(
+        (update, idx) => `
+          <tr>
+            <td>${idx + 1}</td>
+            <td>${escapeHtml(update.developerName)}</td>
+            <td>${escapeHtml(update.workArea)}</td>
+            <td>${update.spentHours ?? "-"}</td>
+            <td>${update.progressPercent ?? 0}%</td>
+            <td>${escapeHtml(update.officeCheckIn ?? "-")}</td>
+            <td>${escapeHtml(update.officeCheckOut ?? "-")}</td>
+            <td>${escapeHtml(getAttendanceStatus(update.officeCheckIn, update.officeCheckOut))}</td>
+            <td>${escapeHtml(update.note)}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+    const html = `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Daily Report - ${escapeHtml(date)}</title>
+          <style>
+            @page {
+              size: A4 portrait;
+              margin: 10mm;
+            }
+            :root {
+              --ink: #17212b;
+              --muted: #5b6877;
+              --line: #d9e1ea;
+              --head-bg: #f3f6fa;
+              --brand: #1f6fb2;
+              --brand-soft: #e9f2fb;
+            }
+            * { box-sizing: border-box; }
+            body {
+              margin: 0;
+              font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+              color: var(--ink);
+              background: #ffffff;
+              padding: 28px;
+            }
+            .sheet {
+              border: 1px solid var(--line);
+              border-radius: 14px;
+              overflow: hidden;
+            }
+            .head {
+              background: linear-gradient(120deg, var(--brand-soft), #ffffff);
+              padding: 18px 20px;
+              border-bottom: 1px solid var(--line);
+            }
+            h1 {
+              margin: 0;
+              font-size: 19px;
+              letter-spacing: 0.02em;
+            }
+            .sub {
+              margin-top: 6px;
+              color: var(--muted);
+              font-size: 12px;
+            }
+            .meta-grid {
+              padding: 16px 20px 10px;
+              display: grid;
+              grid-template-columns: repeat(4, minmax(0, 1fr));
+              gap: 10px;
+            }
+            .meta-card {
+              border: 1px solid var(--line);
+              border-radius: 10px;
+              padding: 10px 12px;
+              background: #fff;
+            }
+            .meta-card small {
+              display: block;
+              color: var(--muted);
+              font-size: 11px;
+              text-transform: uppercase;
+              letter-spacing: 0.05em;
+              margin-bottom: 4px;
+            }
+            .meta-card strong {
+              font-size: 14px;
+            }
+            .table-wrap {
+              padding: 6px 20px 20px;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              border: 1px solid var(--line);
+              border-radius: 10px;
+              overflow: hidden;
+              table-layout: fixed;
+            }
+            th, td {
+              border-bottom: 1px solid var(--line);
+              padding: 9px 10px;
+              text-align: left;
+              vertical-align: top;
+              font-size: 12.5px;
+              word-wrap: break-word;
+              overflow-wrap: anywhere;
+            }
+            th {
+              background: var(--head-bg);
+              color: #2a3a4c;
+              font-size: 10px;
+              text-transform: uppercase;
+              letter-spacing: 0.06em;
+              white-space: normal;
+              line-height: 1.35;
+            }
+            tbody tr:nth-child(even) td {
+              background: #fbfdff;
+            }
+            .col-idx { width: 4%; }
+            .col-dev { width: 9%; }
+            .col-area { width: 8%; }
+            .col-hours { width: 6%; }
+            .col-progress { width: 7%; }
+            .col-in { width: 8%; }
+            .col-out { width: 8%; }
+            .col-att { width: 10%; }
+            .col-note { width: 40%; }
+            .hint {
+              margin-top: 14px;
+              color: var(--muted);
+              font-size: 11px;
+              text-align: right;
+            }
+            .attendance-on-time { color: #1c7a42; font-weight: 600; }
+            .attendance-late,
+            .attendance-early,
+            .attendance-mixed { color: #b15b00; font-weight: 600; }
+            @media print { .hint { display: none; } }
+            @media print {
+              body { padding: 0; }
+              .sheet { border: none; border-radius: 0; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="sheet">
+            <div class="head">
+              <h1>Daily Work Report</h1>
+              <div class="sub">Project Tracker • Product/Engineering Daily Summary</div>
+            </div>
+            <div class="meta-grid">
+              <div class="meta-card">
+                <small>Date</small>
+                <strong>${escapeHtml(formatShortDate(date))}</strong>
+              </div>
+              <div class="meta-card">
+                <small>Week Range</small>
+                <strong>${escapeHtml(formatShortDate(plan.weekStartDate))} - ${escapeHtml(formatShortDate(plan.weekEndDate))}</strong>
+              </div>
+              <div class="meta-card">
+                <small>Total Updates</small>
+                <strong>${updates.length}</strong>
+              </div>
+              <div class="meta-card">
+                <small>Office Hours</small>
+                <strong>${OFFICE_START_TIME} - ${OFFICE_END_TIME}</strong>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <colgroup>
+                  <col class="col-idx" />
+                  <col class="col-dev" />
+                  <col class="col-area" />
+                  <col class="col-hours" />
+                  <col class="col-progress" />
+                  <col class="col-in" />
+                  <col class="col-out" />
+                  <col class="col-att" />
+                  <col class="col-note" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Developer</th>
+                    <th>Work Area</th>
+                    <th>Hours</th>
+                    <th>Completion</th>
+                    <th>Check-in</th>
+                    <th>Check-out</th>
+                    <th>Attendance</th>
+                    <th>Update</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+              <p class="hint">Use Print → Save as PDF for archive/share.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    const reportWindow = window.open("", "_blank", "noopener,noreferrer,width=1000,height=900");
+    if (reportWindow) {
+      reportWindow.document.open();
+      reportWindow.document.write(html);
+      reportWindow.document.close();
+      reportWindow.focus();
+      reportWindow.print();
+      return;
+    }
+
+    // Fallback when popup is blocked: render into hidden iframe and print.
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+
+    const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!frameDoc || !iframe.contentWindow) {
+      document.body.removeChild(iframe);
+      onNotify("Print Failed", "Could not prepare print preview. Please allow popups and try again.", "error");
+      return;
+    }
+
+    frameDoc.open();
+    frameDoc.write(html);
+    frameDoc.close();
+
+    setTimeout(() => {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+      setTimeout(() => {
+        if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      }, 1500);
+    }, 150);
   };
 
   const savePlan = () => {
@@ -487,6 +780,25 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
               </label>
             </div>
 
+            <div className="grid two">
+              <label>
+                Office Check-in
+                <input
+                  type="time"
+                  value={dayUpdateForm.officeCheckIn}
+                  onChange={(e) => setDayUpdateForm((prev) => ({ ...prev, officeCheckIn: e.target.value }))}
+                />
+              </label>
+              <label>
+                Office Check-out
+                <input
+                  type="time"
+                  value={dayUpdateForm.officeCheckOut}
+                  onChange={(e) => setDayUpdateForm((prev) => ({ ...prev, officeCheckOut: e.target.value }))}
+                />
+              </label>
+            </div>
+
             <label>
               Update Note
               <textarea
@@ -528,6 +840,10 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
                                 Edit
                               </button>
                             </div>
+                          </div>
+                          <div className="muted">
+                            Office: {update.officeCheckIn ?? "-"} - {update.officeCheckOut ?? "-"} |{" "}
+                            {getAttendanceStatus(update.officeCheckIn, update.officeCheckOut)}
                           </div>
                           <div>{update.note}</div>
                         </div>
@@ -608,12 +924,25 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
                     {plan.dailyUpdates.length > 0 ? (
                       groupDailyUpdatesByDate(plan.dailyUpdates).map((group) => (
                         <div key={`${plan.id}-${group.date}`} className="weekly-plan-item">
-                          <strong>{formatShortDate(group.date)}</strong>
+                          <div className="row between gap">
+                            <strong>{formatShortDate(group.date)}</strong>
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() => downloadDayPdf(plan, group.date, group.items)}
+                            >
+                              Download PDF
+                            </button>
+                          </div>
                           <div className="stack">
                             {group.items.map((update) => (
                               <div key={update.id} className="compact-cell">
                                 <div>
                                   {update.developerName} | {update.workArea} | {update.spentHours ?? "-"}h | {update.progressPercent ?? 0}%
+                                </div>
+                                <div className="muted">
+                                  Office: {update.officeCheckIn ?? "-"} - {update.officeCheckOut ?? "-"} |{" "}
+                                  {getAttendanceStatus(update.officeCheckIn, update.officeCheckOut)}
                                 </div>
                                 <div>{update.note}</div>
                               </div>
