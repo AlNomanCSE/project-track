@@ -614,6 +614,12 @@ button.danger {
   gap: 12px;
 }
 
+.modal-card.modal-card-lg {
+  width: min(1120px, 100%);
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+}
+
 .modal-card p {
   color: var(--muted);
   line-height: 1.45;

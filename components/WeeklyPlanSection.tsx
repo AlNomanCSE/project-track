@@ -26,7 +26,13 @@ type PlanForm = {
 type DayUpdateForm = {
   date: string;
   developerName: string;
-  note: string;
+  projectName: string;
+  morningPlan: string;
+  eveningUpdate: string;
+  hasBlocker: boolean;
+  blockerDetails: string;
+  hasPendingWork: boolean;
+  pendingWorkDetails: string;
   workArea: WeeklyDayWorkArea;
   spentHours: string;
   progressPercent: string;
@@ -60,7 +66,13 @@ function initialDayUpdateForm(): DayUpdateForm {
   return {
     date: new Date().toISOString().slice(0, 10),
     developerName: "",
-    note: "",
+    projectName: "",
+    morningPlan: "",
+    eveningUpdate: "",
+    hasBlocker: false,
+    blockerDetails: "",
+    hasPendingWork: false,
+    pendingWorkDetails: "",
     workArea: "Frontend",
     spentHours: "",
     progressPercent: "",
@@ -92,6 +104,17 @@ function groupDailyUpdatesByDate(updates: WeeklyPlanDailyUpdate[]) {
   return [...map.entries()].map(([date, items]) => ({ date, items }));
 }
 
+function groupDailyUpdatesByDeveloper(updates: WeeklyPlanDailyUpdate[]) {
+  const map = new Map<string, { developerName: string; items: WeeklyPlanDailyUpdate[] }>();
+  for (const update of updates) {
+    const key = update.developerName.trim().toLowerCase();
+    const current = map.get(key) ?? { developerName: update.developerName, items: [] };
+    current.items.push(update);
+    map.set(key, current);
+  }
+  return [...map.values()];
+}
+
 function currentMonthValue() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -121,13 +144,18 @@ function getAttendanceStatus(checkIn?: string, checkOut?: string) {
 
 export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete, onNotify }: Props) {
   const PLANS_PER_PAGE = 10;
+  const DAY_GROUPS_PER_PAGE = 1;
 
   const [planForm, setPlanForm] = useState<PlanForm>(() => initialPlanForm());
   const [dayUpdateForm, setDayUpdateForm] = useState<DayUpdateForm>(() => initialDayUpdateForm());
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
   const [editingDayUpdateId, setEditingDayUpdateId] = useState<string | null>(null);
+  const [editingDayUpdateForm, setEditingDayUpdateForm] = useState<DayUpdateForm>(() => initialDayUpdateForm());
+  const [isDayEditModalOpen, setIsDayEditModalOpen] = useState(false);
   const [draftDailyUpdates, setDraftDailyUpdates] = useState<WeeklyPlanDailyUpdate[]>([]);
   const [listPage, setListPage] = useState(1);
+  const [draftDayPage, setDraftDayPage] = useState(1);
+  const [planDayPages, setPlanDayPages] = useState<Record<string, number>>({});
   const [activeView, setActiveView] = useState<"form" | "list" | "report">("form");
   const [reportMonth, setReportMonth] = useState<string>(() => currentMonthValue());
 
@@ -141,6 +169,13 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
     const start = (page - 1) * PLANS_PER_PAGE;
     return sortedPlans.slice(start, start + PLANS_PER_PAGE);
   }, [sortedPlans, listPage, totalPages]);
+  const draftDayGroups = useMemo(() => groupDailyUpdatesByDate(draftDailyUpdates), [draftDailyUpdates]);
+  const draftDayTotalPages = Math.max(1, Math.ceil(draftDayGroups.length / DAY_GROUPS_PER_PAGE));
+  const paginatedDraftDayGroups = useMemo(() => {
+    const page = Math.min(Math.max(draftDayPage, 1), draftDayTotalPages);
+    const start = (page - 1) * DAY_GROUPS_PER_PAGE;
+    return draftDayGroups.slice(start, start + DAY_GROUPS_PER_PAGE);
+  }, [draftDayGroups, draftDayPage, draftDayTotalPages]);
   const monthlyReport = useMemo(() => {
     const monthPrefix = reportMonth;
     const coreNameByKey = new Map(CORE_DEVELOPERS.map((name) => [name.toLowerCase(), name]));
@@ -241,7 +276,7 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
         .sort((a, b) => a.date.localeCompare(b.date))
         .map(
           (update) =>
-            `  - ${update.date} | ${update.workArea} | ${update.spentHours ?? "-"}h | ${update.progressPercent ?? 0}% | ${update.note}`
+            `  - ${update.date} | ${update.projectName ?? "-"} | ${update.workArea} | ${update.spentHours ?? "-"}h | ${update.progressPercent ?? 0}% | Morning: ${update.morningPlan ?? "-"} | Evening: ${update.eveningUpdate ?? update.note ?? "-"} | Blocker: ${update.hasBlocker ? (update.blockerDetails ?? "Yes") : "No"} | Pending: ${update.hasPendingWork ? (update.pendingWorkDetails ?? "Yes") : "No"}`
         );
       if (dayWise.length === 0) summary.push("  - No updates in this month.");
       return [...summary, ...dayWise].join("\n");
@@ -269,51 +304,75 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
     if (listPage > totalPages) setListPage(totalPages);
   }, [listPage, totalPages]);
 
+  useEffect(() => {
+    if (draftDayPage > draftDayTotalPages) setDraftDayPage(draftDayTotalPages);
+  }, [draftDayPage, draftDayTotalPages]);
+
   const resetForm = () => {
     setPlanForm(initialPlanForm());
     setDayUpdateForm(initialDayUpdateForm());
     setEditingDayUpdateId(null);
+    setEditingDayUpdateForm(initialDayUpdateForm());
+    setIsDayEditModalOpen(false);
     setDraftDailyUpdates([]);
+    setDraftDayPage(1);
     setEditingPlanId(null);
   };
 
-  const addDailyUpdate = () => {
-    const note = dayUpdateForm.note.trim();
-    const developerName = dayUpdateForm.developerName.trim();
-    if (!dayUpdateForm.date || !developerName || !note) {
-      onNotify("Validation", "Date, Developer Name, and update note are required.", "error");
-      return;
+  const upsertDailyUpdate = (form: DayUpdateForm, targetId?: string) => {
+    const morningPlan = form.morningPlan.trim();
+    const eveningUpdate = form.eveningUpdate.trim();
+    const developerName = form.developerName.trim();
+    const projectName = form.projectName.trim();
+    if (!form.date || !developerName || !projectName || !morningPlan) {
+      onNotify("Validation", "Date, Developer Name, Project Name, and Morning Scrum Assignment are required.", "error");
+      return false;
     }
 
-    const spentHoursRaw = dayUpdateForm.spentHours.trim();
+    const spentHoursRaw = form.spentHours.trim();
     const spentHoursValue = spentHoursRaw ? Number(spentHoursRaw) : NaN;
     if (spentHoursRaw && (!Number.isFinite(spentHoursValue) || spentHoursValue < 0)) {
       onNotify("Validation", "Spent hours must be a valid non-negative number.", "error");
-      return;
+      return false;
     }
-    const progressRaw = dayUpdateForm.progressPercent.trim();
+    const progressRaw = form.progressPercent.trim();
     const progressValue = progressRaw ? Number(progressRaw) : NaN;
     if (progressRaw && (!Number.isFinite(progressValue) || progressValue < 0 || progressValue > 100)) {
       onNotify("Validation", "Completion percentage must be between 0 and 100.", "error");
-      return;
+      return false;
     }
-    const checkIn = dayUpdateForm.officeCheckIn.trim();
-    const checkOut = dayUpdateForm.officeCheckOut.trim();
+    const checkIn = form.officeCheckIn.trim();
+    const checkOut = form.officeCheckOut.trim();
     if ((checkIn && !checkOut) || (!checkIn && checkOut)) {
       onNotify("Validation", "Please provide both check-in and check-out times.", "error");
-      return;
+      return false;
     }
     if (checkIn && checkOut && checkIn > checkOut) {
       onNotify("Validation", "Check-out time cannot be earlier than check-in time.", "error");
-      return;
+      return false;
+    }
+    if (form.hasBlocker && !form.blockerDetails.trim()) {
+      onNotify("Validation", "Please write blocker details or choose No Blocker.", "error");
+      return false;
+    }
+    if (form.hasPendingWork && !form.pendingWorkDetails.trim()) {
+      onNotify("Validation", "Please write pending work details or choose No Pending Work.", "error");
+      return false;
     }
 
     const entry: WeeklyPlanDailyUpdate = {
-      id: editingDayUpdateId || createId(),
-      date: dayUpdateForm.date,
+      id: targetId || createId(),
+      date: form.date,
       developerName,
-      note,
-      workArea: dayUpdateForm.workArea,
+      projectName,
+      note: eveningUpdate || morningPlan,
+      morningPlan,
+      eveningUpdate: eveningUpdate || undefined,
+      hasBlocker: form.hasBlocker,
+      blockerDetails: form.hasBlocker ? form.blockerDetails.trim() : undefined,
+      hasPendingWork: form.hasPendingWork,
+      pendingWorkDetails: form.hasPendingWork ? form.pendingWorkDetails.trim() : undefined,
+      workArea: form.workArea,
       spentHours: spentHoursRaw ? spentHoursValue : undefined,
       progressPercent: progressRaw ? progressValue : undefined,
       officeCheckIn: checkIn || undefined,
@@ -322,41 +381,61 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
     };
 
     setDraftDailyUpdates((prev) => {
-      const next =
-        editingDayUpdateId !== null
-          ? prev.map((item) => (item.id === editingDayUpdateId ? entry : item))
-          : [entry, ...prev];
+      const next = targetId ? prev.map((item) => (item.id === targetId ? entry : item)) : [entry, ...prev];
       return sortDailyUpdatesByDateAsc(next);
     });
-    setEditingDayUpdateId(null);
+    return true;
+  };
+
+  const addDailyUpdate = () => {
+    const saved = upsertDailyUpdate(dayUpdateForm);
+    if (!saved) return;
     setDayUpdateForm((prev) => ({ ...initialDayUpdateForm(), workArea: prev.workArea }));
   };
 
   const removeDailyUpdate = (updateId: string) => {
     if (editingDayUpdateId === updateId) {
       setEditingDayUpdateId(null);
-      setDayUpdateForm(initialDayUpdateForm());
+      setEditingDayUpdateForm(initialDayUpdateForm());
+      setIsDayEditModalOpen(false);
     }
     setDraftDailyUpdates((prev) => prev.filter((item) => item.id !== updateId));
   };
 
   const startEditDailyUpdate = (update: WeeklyPlanDailyUpdate) => {
     setEditingDayUpdateId(update.id);
-    setDayUpdateForm({
+    setEditingDayUpdateForm({
       date: update.date,
       developerName: update.developerName,
-      note: update.note,
+      projectName: update.projectName ?? "",
+      morningPlan: update.morningPlan ?? "",
+      eveningUpdate: update.eveningUpdate ?? update.note ?? "",
+      hasBlocker: update.hasBlocker ?? false,
+      blockerDetails: update.blockerDetails ?? "",
+      hasPendingWork: update.hasPendingWork ?? false,
+      pendingWorkDetails: update.pendingWorkDetails ?? "",
       workArea: update.workArea,
       spentHours: update.spentHours === undefined ? "" : String(update.spentHours),
       progressPercent: update.progressPercent === undefined ? "" : String(update.progressPercent),
       officeCheckIn: update.officeCheckIn ?? "",
       officeCheckOut: update.officeCheckOut ?? ""
     });
+    setIsDayEditModalOpen(true);
   };
 
   const cancelEditDailyUpdate = () => {
     setEditingDayUpdateId(null);
-    setDayUpdateForm(initialDayUpdateForm());
+    setEditingDayUpdateForm(initialDayUpdateForm());
+    setIsDayEditModalOpen(false);
+  };
+
+  const saveEditedDailyUpdate = () => {
+    if (!editingDayUpdateId) return;
+    const saved = upsertDailyUpdate(editingDayUpdateForm, editingDayUpdateId);
+    if (!saved) return;
+    setEditingDayUpdateId(null);
+    setEditingDayUpdateForm(initialDayUpdateForm());
+    setIsDayEditModalOpen(false);
   };
 
   const copyMonthlyReport = async () => {
@@ -380,13 +459,19 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
           <tr>
             <td>${idx + 1}</td>
             <td>${escapeHtml(update.developerName)}</td>
+            <td>${escapeHtml(update.projectName ?? "-")}</td>
             <td>${escapeHtml(update.workArea)}</td>
             <td>${update.spentHours ?? "-"}</td>
             <td>${update.progressPercent ?? 0}%</td>
             <td>${escapeHtml(update.officeCheckIn ?? "-")}</td>
             <td>${escapeHtml(update.officeCheckOut ?? "-")}</td>
             <td>${escapeHtml(getAttendanceStatus(update.officeCheckIn, update.officeCheckOut))}</td>
-            <td>${escapeHtml(update.note)}</td>
+            <td>
+              <strong>Morning:</strong> ${escapeHtml(update.morningPlan ?? "-")}<br/>
+              <strong>Evening:</strong> ${escapeHtml(update.eveningUpdate ?? update.note ?? "-")}<br/>
+              <strong>Blocker:</strong> ${escapeHtml(update.hasBlocker ? (update.blockerDetails ?? "Yes") : "No")}<br/>
+              <strong>Pending:</strong> ${escapeHtml(update.hasPendingWork ? (update.pendingWorkDetails ?? "Yes") : "No")}
+            </td>
           </tr>
         `
       )
@@ -496,13 +581,14 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
             }
             .col-idx { width: 4%; }
             .col-dev { width: 9%; }
-            .col-area { width: 8%; }
+            .col-project { width: 11%; }
+            .col-area { width: 7%; }
             .col-hours { width: 6%; }
             .col-progress { width: 7%; }
             .col-in { width: 8%; }
             .col-out { width: 8%; }
             .col-att { width: 10%; }
-            .col-note { width: 40%; }
+            .col-note { width: 30%; }
             .hint {
               margin-top: 14px;
               color: var(--muted);
@@ -549,6 +635,7 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
                 <colgroup>
                   <col class="col-idx" />
                   <col class="col-dev" />
+                  <col class="col-project" />
                   <col class="col-area" />
                   <col class="col-hours" />
                   <col class="col-progress" />
@@ -561,6 +648,7 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
                   <tr>
                     <th>#</th>
                     <th>Developer</th>
+                    <th>Project</th>
                     <th>Work Area</th>
                     <th>Hours</th>
                     <th>Completion</th>
@@ -644,7 +732,11 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
       weekEndDate: plan.weekEndDate
     });
     setDraftDailyUpdates(sortDailyUpdatesByDateAsc(plan.dailyUpdates));
+    setDraftDayPage(1);
     setDayUpdateForm((prev) => ({ ...initialDayUpdateForm(), workArea: prev.workArea }));
+    setEditingDayUpdateId(null);
+    setEditingDayUpdateForm(initialDayUpdateForm());
+    setIsDayEditModalOpen(false);
     setActiveView("form");
   };
 
@@ -744,6 +836,14 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
                 </datalist>
               </label>
               <label>
+                Project Name
+                <input
+                  value={dayUpdateForm.projectName}
+                  onChange={(e) => setDayUpdateForm((prev) => ({ ...prev, projectName: e.target.value }))}
+                  placeholder="Example: myrec.asia"
+                />
+              </label>
+              <label>
                 Work Area
                 <select
                   value={dayUpdateForm.workArea}
@@ -799,53 +899,162 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
               </label>
             </div>
 
-            <label>
-              Update Note
-              <textarea
-                rows={4}
-                value={dayUpdateForm.note}
-                onChange={(e) => setDayUpdateForm((prev) => ({ ...prev, note: e.target.value }))}
-                placeholder="Write day-wise progress/update for this week plan..."
-              />
-            </label>
+            <div className="grid two">
+              <label>
+                Morning Scrum Assignment
+                <textarea
+                  rows={4}
+                  value={dayUpdateForm.morningPlan}
+                  onChange={(e) => setDayUpdateForm((prev) => ({ ...prev, morningPlan: e.target.value }))}
+                  placeholder="Morning plan / assigned tasks..."
+                />
+              </label>
+              <label>
+                Evening Work Update
+                <textarea
+                  rows={4}
+                  value={dayUpdateForm.eveningUpdate}
+                  onChange={(e) => setDayUpdateForm((prev) => ({ ...prev, eveningUpdate: e.target.value }))}
+                  placeholder="End-of-day progress before office close..."
+                />
+              </label>
+            </div>
+
+            <div className="grid two">
+              <div className="weekly-plan-item">
+                <div className="row between gap">
+                  <strong>Any Blockers?</strong>
+                  <div className="row gap">
+                    <button
+                      type="button"
+                      className={dayUpdateForm.hasBlocker ? "secondary" : ""}
+                      onClick={() => setDayUpdateForm((prev) => ({ ...prev, hasBlocker: false, blockerDetails: "" }))}
+                    >
+                      No Blocker
+                    </button>
+                    <button
+                      type="button"
+                      className={dayUpdateForm.hasBlocker ? "" : "secondary"}
+                      onClick={() => setDayUpdateForm((prev) => ({ ...prev, hasBlocker: true }))}
+                    >
+                      Has Blocker
+                    </button>
+                  </div>
+                </div>
+                {dayUpdateForm.hasBlocker ? (
+                  <label>
+                    Blocker Details
+                    <textarea
+                      rows={3}
+                      value={dayUpdateForm.blockerDetails}
+                      onChange={(e) => setDayUpdateForm((prev) => ({ ...prev, blockerDetails: e.target.value }))}
+                      placeholder="Write blocker details..."
+                    />
+                  </label>
+                ) : null}
+              </div>
+
+              <div className="weekly-plan-item">
+                <div className="row between gap">
+                  <strong>Any Pending Work?</strong>
+                  <div className="row gap">
+                    <button
+                      type="button"
+                      className={dayUpdateForm.hasPendingWork ? "secondary" : ""}
+                      onClick={() => setDayUpdateForm((prev) => ({ ...prev, hasPendingWork: false, pendingWorkDetails: "" }))}
+                    >
+                      No Pending
+                    </button>
+                    <button
+                      type="button"
+                      className={dayUpdateForm.hasPendingWork ? "" : "secondary"}
+                      onClick={() => setDayUpdateForm((prev) => ({ ...prev, hasPendingWork: true }))}
+                    >
+                      Has Pending
+                    </button>
+                  </div>
+                </div>
+                {dayUpdateForm.hasPendingWork ? (
+                  <label>
+                    Pending Work Details
+                    <textarea
+                      rows={3}
+                      value={dayUpdateForm.pendingWorkDetails}
+                      onChange={(e) => setDayUpdateForm((prev) => ({ ...prev, pendingWorkDetails: e.target.value }))}
+                      placeholder="Write pending work details..."
+                    />
+                  </label>
+                ) : null}
+              </div>
+            </div>
 
             <div className="row gap">
               <button type="button" onClick={addDailyUpdate}>
-                {editingDayUpdateId ? "Update Day Update" : "Add Day Update"}
+                Add Day Update
               </button>
-              {editingDayUpdateId ? (
-                <button type="button" className="secondary" onClick={cancelEditDailyUpdate}>
-                  Cancel
-                </button>
-              ) : null}
             </div>
 
             {draftDailyUpdates.length > 0 ? (
               <div className="stack">
-                {groupDailyUpdatesByDate(draftDailyUpdates).map((group) => (
+                <div className="row between gap">
+                  <small className="muted">
+                    Day Pages: {draftDayPage} / {draftDayTotalPages}
+                  </small>
+                  <div className="row gap">
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={draftDayPage <= 1}
+                      onClick={() => setDraftDayPage((prev) => Math.max(prev - 1, 1))}
+                    >
+                      Prev Days
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={draftDayPage >= draftDayTotalPages}
+                      onClick={() => setDraftDayPage((prev) => Math.min(prev + 1, draftDayTotalPages))}
+                    >
+                      Next Days
+                    </button>
+                  </div>
+                </div>
+
+                {paginatedDraftDayGroups.map((group) => (
                   <div key={group.date} className="weekly-plan-item">
                     <strong>{formatShortDate(group.date)}</strong>
                     <div className="stack">
-                      {group.items.map((update) => (
-                        <div key={update.id} className="compact-cell">
-                          <div className="row between gap">
-                            <div className="muted">
-                              {update.developerName} | {update.workArea} | {update.spentHours ?? "-"}h | {update.progressPercent ?? 0}%
-                            </div>
-                            <div className="row gap">
-                              <button type="button" className="danger" onClick={() => removeDailyUpdate(update.id)}>
-                                Remove
-                              </button>
-                              <button type="button" className="secondary" onClick={() => startEditDailyUpdate(update)}>
-                                Edit
-                              </button>
-                            </div>
-                          </div>
-                          <div className="muted">
-                            Office: {update.officeCheckIn ?? "-"} - {update.officeCheckOut ?? "-"} |{" "}
-                            {getAttendanceStatus(update.officeCheckIn, update.officeCheckOut)}
-                          </div>
-                          <div>{update.note}</div>
+                      {groupDailyUpdatesByDeveloper(group.items).map((devGroup) => (
+                        <div key={`${group.date}-${devGroup.developerName}`} className="weekly-plan-item">
+                          <strong>{devGroup.developerName}</strong>
+                          <ul className="change-points">
+                            {devGroup.items.map((update) => (
+                              <li key={update.id}>
+                                <div className="row between gap">
+                                  <div className="muted">
+                                    {update.projectName ?? "-"} | {update.workArea} | {update.spentHours ?? "-"}h |{" "}
+                                    {update.progressPercent ?? 0}%
+                                  </div>
+                                  <div className="row gap">
+                                    <button type="button" className="danger" onClick={() => removeDailyUpdate(update.id)}>
+                                      Remove
+                                    </button>
+                                    <button type="button" className="secondary" onClick={() => startEditDailyUpdate(update)}>
+                                      Edit
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className="muted">
+                                  Office: {update.officeCheckIn ?? "-"} - {update.officeCheckOut ?? "-"} |{" "}
+                                  {getAttendanceStatus(update.officeCheckIn, update.officeCheckOut)}
+                                </div>
+                                <div><strong>Morning:</strong> {update.morningPlan ?? "-"}</div>
+                                <div><strong>Evening:</strong> {update.eveningUpdate ?? update.note ?? "-"}</div>
+                                <div><strong>Blocker:</strong> {update.hasBlocker ? (update.blockerDetails ?? "Yes") : "No"}</div>
+                                <div><strong>Pending:</strong> {update.hasPendingWork ? (update.pendingWorkDetails ?? "Yes") : "No"}</div>
+                              </li>
+                            ))}
+                          </ul>
                         </div>
                       ))}
                     </div>
@@ -906,56 +1115,115 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
 
               {paginatedPlans.map((plan) => (
                 <article key={plan.id} className="weekly-plan-item">
-                  <div className="row between gap">
-                    <strong>
-                      Week: {formatShortDate(plan.weekStartDate)} - {formatShortDate(plan.weekEndDate)}
-                    </strong>
-                    <div className="row gap">
-                      <button type="button" className="secondary" onClick={() => startEdit(plan)}>
-                        Edit
-                      </button>
-                      <button type="button" className="danger" onClick={() => onDelete(plan.id)}>
-                        Delete
-                      </button>
-                    </div>
-                  </div>
+                  {(() => {
+                    const dayGroups = groupDailyUpdatesByDate(plan.dailyUpdates);
+                    const dayTotalPages = Math.max(1, Math.ceil(dayGroups.length / DAY_GROUPS_PER_PAGE));
+                    const currentPage = Math.min(Math.max(planDayPages[plan.id] ?? 1, 1), dayTotalPages);
+                    const start = (currentPage - 1) * DAY_GROUPS_PER_PAGE;
+                    const visibleDayGroups = dayGroups.slice(start, start + DAY_GROUPS_PER_PAGE);
 
-                  <div className="stack">
-                    {plan.dailyUpdates.length > 0 ? (
-                      groupDailyUpdatesByDate(plan.dailyUpdates).map((group) => (
-                        <div key={`${plan.id}-${group.date}`} className="weekly-plan-item">
-                          <div className="row between gap">
-                            <strong>{formatShortDate(group.date)}</strong>
-                            <button
-                              type="button"
-                              className="secondary"
-                              onClick={() => downloadDayPdf(plan, group.date, group.items)}
-                            >
-                              Download PDF
+                    return (
+                      <>
+                        <div className="row between gap">
+                          <strong>
+                            Week: {formatShortDate(plan.weekStartDate)} - {formatShortDate(plan.weekEndDate)}
+                          </strong>
+                          <div className="row gap">
+                            <button type="button" className="secondary" onClick={() => startEdit(plan)}>
+                              Edit
+                            </button>
+                            <button type="button" className="danger" onClick={() => onDelete(plan.id)}>
+                              Delete
                             </button>
                           </div>
-                          <div className="stack">
-                            {group.items.map((update) => (
-                              <div key={update.id} className="compact-cell">
-                                <div>
-                                  {update.developerName} | {update.workArea} | {update.spentHours ?? "-"}h | {update.progressPercent ?? 0}%
-                                </div>
-                                <div className="muted">
-                                  Office: {update.officeCheckIn ?? "-"} - {update.officeCheckOut ?? "-"} |{" "}
-                                  {getAttendanceStatus(update.officeCheckIn, update.officeCheckOut)}
-                                </div>
-                                <div>{update.note}</div>
-                              </div>
-                            ))}
-                          </div>
                         </div>
-                      ))
-                    ) : (
-                      <p className="muted">No day-wise updates in this week.</p>
-                    )}
-                  </div>
 
-                  <small>Last Updated: {formatDateTime(plan.updatedAt)}</small>
+                        {dayGroups.length > 0 ? (
+                          <div className="row between gap">
+                            <small className="muted">
+                              Day Pages: {currentPage} / {dayTotalPages}
+                            </small>
+                            <div className="row gap">
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={currentPage <= 1}
+                                onClick={() =>
+                                  setPlanDayPages((prev) => ({
+                                    ...prev,
+                                    [plan.id]: Math.max((prev[plan.id] ?? 1) - 1, 1)
+                                  }))
+                                }
+                              >
+                                Prev Days
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={currentPage >= dayTotalPages}
+                                onClick={() =>
+                                  setPlanDayPages((prev) => ({
+                                    ...prev,
+                                    [plan.id]: Math.min((prev[plan.id] ?? 1) + 1, dayTotalPages)
+                                  }))
+                                }
+                              >
+                                Next Days
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        <div className="stack">
+                          {plan.dailyUpdates.length > 0 ? (
+                            visibleDayGroups.map((group) => (
+                              <div key={`${plan.id}-${group.date}`} className="weekly-plan-item">
+                                <div className="row between gap">
+                                  <strong>{formatShortDate(group.date)}</strong>
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={() => downloadDayPdf(plan, group.date, group.items)}
+                                  >
+                                    Download PDF
+                                  </button>
+                                </div>
+                                <div className="stack">
+                                  {groupDailyUpdatesByDeveloper(group.items).map((devGroup) => (
+                                    <div key={`${plan.id}-${group.date}-${devGroup.developerName}`} className="compact-cell">
+                                      <strong>{devGroup.developerName}</strong>
+                                      <ul className="change-points">
+                                        {devGroup.items.map((update) => (
+                                          <li key={update.id}>
+                                            <div>
+                                              {update.projectName ?? "-"} | {update.workArea} | {update.spentHours ?? "-"}h |{" "}
+                                              {update.progressPercent ?? 0}%
+                                            </div>
+                                            <div className="muted">
+                                              Office: {update.officeCheckIn ?? "-"} - {update.officeCheckOut ?? "-"} |{" "}
+                                              {getAttendanceStatus(update.officeCheckIn, update.officeCheckOut)}
+                                            </div>
+                                            <div><strong>Morning:</strong> {update.morningPlan ?? "-"}</div>
+                                            <div><strong>Evening:</strong> {update.eveningUpdate ?? update.note ?? "-"}</div>
+                                            <div><strong>Blocker:</strong> {update.hasBlocker ? (update.blockerDetails ?? "Yes") : "No"}</div>
+                                            <div><strong>Pending:</strong> {update.hasPendingWork ? (update.pendingWorkDetails ?? "Yes") : "No"}</div>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="muted">No day-wise updates in this week.</p>
+                          )}
+                        </div>
+
+                        <small>Last Updated: {formatDateTime(plan.updatedAt)}</small>
+                      </>
+                    );
+                  })()}
                 </article>
               ))}
             </div>
@@ -1021,9 +1289,12 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
                       .map((update) => (
                         <div key={update.id} className="compact-cell">
                           <div>
-                            {formatShortDate(update.date)} | {update.workArea} | {update.spentHours ?? "-"}h | {update.progressPercent ?? 0}%
+                            {formatShortDate(update.date)} | {update.projectName ?? "-"} | {update.workArea} | {update.spentHours ?? "-"}h | {update.progressPercent ?? 0}%
                           </div>
-                          <div>{update.note}</div>
+                          <div><strong>Morning:</strong> {update.morningPlan ?? "-"}</div>
+                          <div><strong>Evening:</strong> {update.eveningUpdate ?? update.note ?? "-"}</div>
+                          <div><strong>Blocker:</strong> {update.hasBlocker ? (update.blockerDetails ?? "Yes") : "No"}</div>
+                          <div><strong>Pending:</strong> {update.hasPendingWork ? (update.pendingWorkDetails ?? "Yes") : "No"}</div>
                         </div>
                       ))
                   ) : (
@@ -1044,6 +1315,193 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
             </div>
           ) : null}
         </section>
+      ) : null}
+
+      {isDayEditModalOpen && editingDayUpdateId ? (
+        <div className="modal-backdrop" onClick={cancelEditDailyUpdate}>
+          <section className="modal-card modal-card-lg stack" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className="row between gap">
+              <h3>Edit Day-wise Update</h3>
+              <button type="button" className="secondary" onClick={cancelEditDailyUpdate}>
+                Close
+              </button>
+            </div>
+
+            <div className="grid five">
+              <label>
+                Date
+                <input
+                  type="date"
+                  value={editingDayUpdateForm.date}
+                  onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, date: e.target.value }))}
+                />
+              </label>
+              <label>
+                Developer Name
+                <input
+                  list="weekly-dev-names"
+                  value={editingDayUpdateForm.developerName}
+                  onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, developerName: e.target.value }))}
+                  placeholder="Raihan / Mainul / Noman"
+                />
+              </label>
+              <label>
+                Project Name
+                <input
+                  value={editingDayUpdateForm.projectName}
+                  onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, projectName: e.target.value }))}
+                  placeholder="Example: myrec.asia"
+                />
+              </label>
+              <label>
+                Work Area
+                <select
+                  value={editingDayUpdateForm.workArea}
+                  onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, workArea: e.target.value as WeeklyDayWorkArea }))}
+                >
+                  {WEEKLY_DAY_WORK_AREAS.map((area) => (
+                    <option key={area} value={area}>
+                      {area}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Time Spent (hours)
+                <input
+                  type="number"
+                  min="0"
+                  step="0.25"
+                  value={editingDayUpdateForm.spentHours}
+                  onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, spentHours: e.target.value }))}
+                />
+              </label>
+              <label>
+                Completion (%)
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={editingDayUpdateForm.progressPercent}
+                  onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, progressPercent: e.target.value }))}
+                />
+              </label>
+            </div>
+
+            <div className="grid two">
+              <label>
+                Office Check-in
+                <input
+                  type="time"
+                  value={editingDayUpdateForm.officeCheckIn}
+                  onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, officeCheckIn: e.target.value }))}
+                />
+              </label>
+              <label>
+                Office Check-out
+                <input
+                  type="time"
+                  value={editingDayUpdateForm.officeCheckOut}
+                  onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, officeCheckOut: e.target.value }))}
+                />
+              </label>
+            </div>
+
+            <div className="grid two">
+              <label>
+                Morning Scrum Assignment
+                <textarea
+                  rows={5}
+                  value={editingDayUpdateForm.morningPlan}
+                  onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, morningPlan: e.target.value }))}
+                />
+              </label>
+              <label>
+                Evening Work Update
+                <textarea
+                  rows={5}
+                  value={editingDayUpdateForm.eveningUpdate}
+                  onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, eveningUpdate: e.target.value }))}
+                />
+              </label>
+            </div>
+
+            <div className="grid two">
+              <div className="weekly-plan-item">
+                <div className="row between gap">
+                  <strong>Any Blockers?</strong>
+                  <div className="row gap">
+                    <button
+                      type="button"
+                      className={editingDayUpdateForm.hasBlocker ? "secondary" : ""}
+                      onClick={() => setEditingDayUpdateForm((prev) => ({ ...prev, hasBlocker: false, blockerDetails: "" }))}
+                    >
+                      No Blocker
+                    </button>
+                    <button
+                      type="button"
+                      className={editingDayUpdateForm.hasBlocker ? "" : "secondary"}
+                      onClick={() => setEditingDayUpdateForm((prev) => ({ ...prev, hasBlocker: true }))}
+                    >
+                      Has Blocker
+                    </button>
+                  </div>
+                </div>
+                {editingDayUpdateForm.hasBlocker ? (
+                  <label>
+                    Blocker Details
+                    <textarea
+                      rows={4}
+                      value={editingDayUpdateForm.blockerDetails}
+                      onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, blockerDetails: e.target.value }))}
+                    />
+                  </label>
+                ) : null}
+              </div>
+
+              <div className="weekly-plan-item">
+                <div className="row between gap">
+                  <strong>Any Pending Work?</strong>
+                  <div className="row gap">
+                    <button
+                      type="button"
+                      className={editingDayUpdateForm.hasPendingWork ? "secondary" : ""}
+                      onClick={() => setEditingDayUpdateForm((prev) => ({ ...prev, hasPendingWork: false, pendingWorkDetails: "" }))}
+                    >
+                      No Pending
+                    </button>
+                    <button
+                      type="button"
+                      className={editingDayUpdateForm.hasPendingWork ? "" : "secondary"}
+                      onClick={() => setEditingDayUpdateForm((prev) => ({ ...prev, hasPendingWork: true }))}
+                    >
+                      Has Pending
+                    </button>
+                  </div>
+                </div>
+                {editingDayUpdateForm.hasPendingWork ? (
+                  <label>
+                    Pending Work Details
+                    <textarea
+                      rows={4}
+                      value={editingDayUpdateForm.pendingWorkDetails}
+                      onChange={(e) => setEditingDayUpdateForm((prev) => ({ ...prev, pendingWorkDetails: e.target.value }))}
+                    />
+                  </label>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="row gap">
+              <button type="button" onClick={saveEditedDailyUpdate}>
+                Update Day Update
+              </button>
+              <button type="button" className="secondary" onClick={cancelEditDailyUpdate}>
+                Cancel
+              </button>
+            </div>
+          </section>
+        </div>
       ) : null}
     </section>
   );

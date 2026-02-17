@@ -181,6 +181,105 @@ alter table public.weekly_plans
 
 create index if not exists ix_weekly_plans_week_start on public.weekly_plans(week_start_date desc);
 
+create table if not exists public.weekly_plan_daily_entries (
+  id bigserial primary key,
+  weekly_plan_id text not null references public.weekly_plans(id) on delete cascade,
+  source_update_id text not null,
+  entry_date date not null,
+  developer_name text not null,
+  project_name text,
+  work_area text not null check (work_area in ('Frontend', 'Backend', 'QA', 'Frontend + Backend', 'Other')),
+  morning_plan text,
+  evening_update text,
+  spent_hours numeric(6,2) check (spent_hours is null or spent_hours >= 0),
+  progress_percent numeric(5,2) check (progress_percent is null or (progress_percent >= 0 and progress_percent <= 100)),
+  office_check_in time,
+  office_check_out time,
+  has_blocker boolean not null default false,
+  blocker_details text,
+  has_pending_work boolean not null default false,
+  pending_work_details text,
+  updated_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  constraint weekly_plan_daily_entries_unique_source unique (weekly_plan_id, source_update_id)
+);
+
+create index if not exists ix_weekly_plan_daily_entries_plan_date
+  on public.weekly_plan_daily_entries(weekly_plan_id, entry_date desc);
+create index if not exists ix_weekly_plan_daily_entries_dev_date
+  on public.weekly_plan_daily_entries(developer_name, entry_date desc);
+create index if not exists ix_weekly_plan_daily_entries_project_date
+  on public.weekly_plan_daily_entries(project_name, entry_date desc);
+create index if not exists ix_weekly_plan_daily_entries_blocker
+  on public.weekly_plan_daily_entries(has_blocker, has_pending_work);
+
+insert into public.weekly_plan_daily_entries (
+  weekly_plan_id,
+  source_update_id,
+  entry_date,
+  developer_name,
+  project_name,
+  work_area,
+  morning_plan,
+  evening_update,
+  spent_hours,
+  progress_percent,
+  office_check_in,
+  office_check_out,
+  has_blocker,
+  blocker_details,
+  has_pending_work,
+  pending_work_details,
+  updated_at
+)
+select
+  wp.id as weekly_plan_id,
+  coalesce(nullif(trim(entry->>'id'), ''), md5(wp.id || '-' || coalesce(entry->>'date', '') || '-' || coalesce(entry->>'developerName', '') || '-' || entry::text)) as source_update_id,
+  coalesce(nullif(entry->>'date', '')::date, wp.week_start_date) as entry_date,
+  coalesce(nullif(trim(entry->>'developerName'), ''), 'Unknown') as developer_name,
+  nullif(trim(entry->>'projectName'), '') as project_name,
+  coalesce(nullif(entry->>'workArea', ''), 'Other') as work_area,
+  nullif(trim(entry->>'morningPlan'), '') as morning_plan,
+  coalesce(
+    nullif(trim(entry->>'eveningUpdate'), ''),
+    nullif(trim(entry->>'note'), '')
+  ) as evening_update,
+  case
+    when jsonb_typeof(entry->'spentHours') = 'number' then (entry->>'spentHours')::numeric
+    else null
+  end as spent_hours,
+  case
+    when jsonb_typeof(entry->'progressPercent') = 'number' then (entry->>'progressPercent')::numeric
+    else null
+  end as progress_percent,
+  case
+    when coalesce(entry->>'officeCheckIn', '') ~ '^\d{2}:\d{2}$' then (entry->>'officeCheckIn')::time
+    else null
+  end as office_check_in,
+  case
+    when coalesce(entry->>'officeCheckOut', '') ~ '^\d{2}:\d{2}$' then (entry->>'officeCheckOut')::time
+    else null
+  end as office_check_out,
+  case
+    when lower(coalesce(entry->>'hasBlocker', '')) in ('true', 'false') then (entry->>'hasBlocker')::boolean
+    else false
+  end as has_blocker,
+  nullif(trim(entry->>'blockerDetails'), '') as blocker_details,
+  case
+    when lower(coalesce(entry->>'hasPendingWork', '')) in ('true', 'false') then (entry->>'hasPendingWork')::boolean
+    else false
+  end as has_pending_work,
+  nullif(trim(entry->>'pendingWorkDetails'), '') as pending_work_details,
+  coalesce(nullif(entry->>'updatedAt', '')::timestamptz, wp.updated_at) as updated_at
+from public.weekly_plans wp
+cross join lateral jsonb_array_elements(
+  case
+    when jsonb_typeof(coalesce(wp.daily_updates, '[]'::jsonb)) = 'array' then coalesce(wp.daily_updates, '[]'::jsonb)
+    else '[]'::jsonb
+  end
+) as entry
+on conflict (weekly_plan_id, source_update_id) do nothing;
+
 create table if not exists public.task_access_meta (
   task_id text primary key references public.project_tasks(id) on delete cascade,
   owner_user_id text references public.app_users(id),
@@ -286,6 +385,7 @@ alter table public.task_events enable row level security;
 alter table public.task_hour_revisions enable row level security;
 alter table public.app_users enable row level security;
 alter table public.weekly_plans enable row level security;
+alter table public.weekly_plan_daily_entries enable row level security;
 alter table public.task_access_meta enable row level security;
 
 -- ---------------------------------------------------------------------------
@@ -397,6 +497,27 @@ with check (public.app_is_super_user());
 
 drop policy if exists "weekly plans delete" on public.weekly_plans;
 create policy "weekly plans delete" on public.weekly_plans
+for delete to authenticated
+using (public.app_is_super_user());
+
+drop policy if exists "weekly plan entries select" on public.weekly_plan_daily_entries;
+create policy "weekly plan entries select" on public.weekly_plan_daily_entries
+for select to authenticated
+using (public.app_is_super_user());
+
+drop policy if exists "weekly plan entries insert" on public.weekly_plan_daily_entries;
+create policy "weekly plan entries insert" on public.weekly_plan_daily_entries
+for insert to authenticated
+with check (public.app_is_super_user());
+
+drop policy if exists "weekly plan entries update" on public.weekly_plan_daily_entries;
+create policy "weekly plan entries update" on public.weekly_plan_daily_entries
+for update to authenticated
+using (public.app_is_super_user())
+with check (public.app_is_super_user());
+
+drop policy if exists "weekly plan entries delete" on public.weekly_plan_daily_entries;
+create policy "weekly plan entries delete" on public.weekly_plan_daily_entries
 for delete to authenticated
 using (public.app_is_super_user());
 

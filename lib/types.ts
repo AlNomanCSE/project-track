@@ -97,7 +97,14 @@ export type WeeklyPlanDailyUpdate = {
   id: string;
   date: string;
   developerName: string;
-  note: string;
+  projectName?: string;
+  note?: string;
+  morningPlan?: string;
+  eveningUpdate?: string;
+  hasBlocker?: boolean;
+  blockerDetails?: string;
+  hasPendingWork?: boolean;
+  pendingWorkDetails?: string;
   workArea: WeeklyDayWorkArea;
   spentHours?: number;
   progressPercent?: number;
