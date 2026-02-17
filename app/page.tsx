@@ -6,8 +6,10 @@ import TaskForm from "@/components/TaskForm";
 import TaskFilters from "@/components/TaskFilters";
 import TaskList from "@/components/TaskList";
 import PopupModal from "@/components/PopupModal";
+import TodoSection from "@/components/TodoSection";
 import WeeklyPlanSection from "@/components/WeeklyPlanSection";
 import { taskRepository } from "@/lib/storage";
+import { todoRepository } from "@/lib/todo";
 import { weeklyPlanRepository } from "@/lib/weekly-plan";
 import { filterTasks, canTransition, applyStatusMetadata } from "@/lib/workflow";
 import { decideUserApproval, deleteUserBySuper, loginUser, logoutUser, readSessionUser, readUsers, registerUser } from "@/lib/auth";
@@ -27,6 +29,8 @@ import {
   type TaskApprovalStatus,
   type TaskFilters as Filters,
   type TaskStatus,
+  type TodoInput,
+  type TodoItem,
   type UserRole,
   type WeeklyPlan,
   type WeeklyPlanInput
@@ -50,10 +54,11 @@ export default function HomePage() {
   const [theme, setTheme] = useState<AppTheme>("dark");
   const [tasks, setTasks] = useState<ProjectTask[]>([]);
   const [weeklyPlans, setWeeklyPlans] = useState<WeeklyPlan[]>([]);
+  const [todoItems, setTodoItems] = useState<TodoItem[]>([]);
   const [taskMetaById, setTaskMetaById] = useState<TaskMetaById>({});
   const [users, setUsers] = useState<AppUser[]>([]);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
-  const [activeTab, setActiveTab] = useState<"requests" | "weekly">("requests");
+  const [activeTab, setActiveTab] = useState<"requests" | "weekly" | "todo">("requests");
   const [requestTab, setRequestTab] = useState<"add" | "list">("add");
   const [listPage, setListPage] = useState(1);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
@@ -129,10 +134,11 @@ export default function HomePage() {
     let active = true;
 
     const loadData = async () => {
-      const [initialTasks, initialUsers, initialWeeklyPlans] = await Promise.all([
+      const [initialTasks, initialUsers, initialWeeklyPlans, initialTodos] = await Promise.all([
         taskRepository.read(),
         readUsers(),
-        weeklyPlanRepository.read()
+        weeklyPlanRepository.read(),
+        todoRepository.read()
       ]);
       const sessionUser = await readSessionUser(initialUsers);
       const initialMeta = await readTaskMetaById();
@@ -142,6 +148,7 @@ export default function HomePage() {
 
       setTasks(initialTasks);
       setWeeklyPlans(initialWeeklyPlans);
+      setTodoItems(initialTodos);
       setUsers(initialUsers);
       setCurrentUser(sessionUser);
       setTaskMetaById(synced.next);
@@ -179,7 +186,13 @@ export default function HomePage() {
       const tab = params.get("tab");
       const rtab = params.get("rtab");
 
-      setActiveTab(tab === "weekly" ? "weekly" : "requests");
+      if (tab === "weekly") {
+        setActiveTab("weekly");
+      } else if (tab === "todo") {
+        setActiveTab("todo");
+      } else {
+        setActiveTab("requests");
+      }
       setRequestTab(rtab === "list" ? "list" : "add");
     };
 
@@ -188,8 +201,9 @@ export default function HomePage() {
     return () => window.removeEventListener("popstate", applyFromUrl);
   }, []);
 
-  const navigateMainTab = (tab: "requests" | "weekly") => {
-    const url = tab === "weekly" ? "/?tab=weekly" : `/?tab=requests&rtab=${requestTab}`;
+  const navigateMainTab = (tab: "requests" | "weekly" | "todo") => {
+    const url =
+      tab === "weekly" ? "/?tab=weekly" : tab === "todo" ? "/?tab=todo" : `/?tab=requests&rtab=${requestTab}`;
     window.history.pushState({}, "", url);
     setActiveTab(tab);
   };
@@ -208,6 +222,11 @@ export default function HomePage() {
   }, [tasks, taskMetaById, currentUser, filters]);
   const isCurrentSuperUser = isSuperUser(currentUser);
   const canManageTasks = !!currentUser && (currentUser.role === "admin" || currentUser.role === "super_user");
+  const visibleTodoItems = useMemo(() => {
+    if (!currentUser) return [];
+    if (currentUser.role === "admin" || currentUser.role === "super_user") return todoItems;
+    return todoItems.filter((item) => item.createdByUserId === currentUser.id);
+  }, [todoItems, currentUser]);
   const canEditTaskByRole = (taskId: string) => {
     if (!currentUser) return false;
     if (currentUser.role === "admin" || currentUser.role === "super_user") return true;
@@ -894,6 +913,77 @@ export default function HomePage() {
     }
   };
 
+  const handleTodoCreate = async (input: TodoInput) => {
+    if (!currentUser) {
+      openModal("Access Denied", "Please login first.", "error");
+      return;
+    }
+
+    try {
+      const created = await todoRepository.create({
+        ...input,
+        id: createId(),
+        createdByUserId: currentUser.id
+      });
+      setTodoItems((prev) => [created, ...prev]);
+      openModal("To-Do Added", "New to-do item has been added.", "success");
+    } catch (error) {
+      openModal("Save Failed", error instanceof Error ? error.message : "Could not save to-do item.", "error");
+    }
+  };
+
+  const handleTodoUpdate = async (itemId: string, input: TodoInput) => {
+    if (!currentUser) {
+      openModal("Access Denied", "Please login first.", "error");
+      return;
+    }
+
+    try {
+      const updated = await todoRepository.update(itemId, input);
+      if (!updated) {
+        openModal("Not Found", "To-do item was not found.", "error");
+        return;
+      }
+      setTodoItems((prev) => prev.map((item) => (item.id === itemId ? updated : item)));
+      openModal("To-Do Updated", "To-do item has been updated.", "success");
+    } catch (error) {
+      openModal("Update Failed", error instanceof Error ? error.message : "Could not update to-do item.", "error");
+    }
+  };
+
+  const handleTodoDelete = async (itemId: string) => {
+    if (!currentUser) {
+      openModal("Access Denied", "Please login first.", "error");
+      return;
+    }
+
+    try {
+      await todoRepository.remove(itemId);
+      setTodoItems((prev) => prev.filter((item) => item.id !== itemId));
+      openModal("To-Do Deleted", "To-do item has been deleted.", "success");
+    } catch (error) {
+      openModal("Delete Failed", error instanceof Error ? error.message : "Could not delete to-do item.", "error");
+    }
+  };
+
+  const handleTodoToggleStatus = async (itemId: string, nextStatus: "not_done" | "done") => {
+    if (!currentUser) {
+      openModal("Access Denied", "Please login first.", "error");
+      return;
+    }
+
+    try {
+      const updated = await todoRepository.updateStatus(itemId, nextStatus);
+      if (!updated) {
+        openModal("Not Found", "To-do item was not found.", "error");
+        return;
+      }
+      setTodoItems((prev) => prev.map((item) => (item.id === itemId ? updated : item)));
+    } catch (error) {
+      openModal("Status Update Failed", error instanceof Error ? error.message : "Could not update to-do status.", "error");
+    }
+  };
+
   const handleLoginSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const result = await loginUser(loginValues);
@@ -1170,6 +1260,13 @@ export default function HomePage() {
             >
               Requests
             </button>
+            <button
+              type="button"
+              className={activeTab === "todo" ? "tab-btn active" : "tab-btn"}
+              onClick={() => navigateMainTab("todo")}
+            >
+              To-Do
+            </button>
             {isCurrentSuperUser ? (
               <button
                 type="button"
@@ -1244,6 +1341,15 @@ export default function HomePage() {
                 </>
               )}
             </div>
+          ) : activeTab === "todo" ? (
+            <TodoSection
+              items={visibleTodoItems}
+              onCreate={handleTodoCreate}
+              onUpdate={handleTodoUpdate}
+              onDelete={handleTodoDelete}
+              onToggleStatus={handleTodoToggleStatus}
+              onNotify={openModal}
+            />
           ) : isCurrentSuperUser ? (
             <WeeklyPlanSection
               plans={weeklyPlans}

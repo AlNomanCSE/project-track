@@ -128,3 +128,24 @@ export type WeeklyPlanInput = {
   weekEndDate: string;
   dailyUpdates?: WeeklyPlanDailyUpdate[];
 };
+
+export const TODO_STATUSES = ["not_done", "done"] as const;
+export type TodoStatus = (typeof TODO_STATUSES)[number];
+
+export type TodoItem = {
+  id: string;
+  title: string;
+  details?: string;
+  dueDate: string;
+  status: TodoStatus;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TodoInput = {
+  title: string;
+  details?: string;
+  dueDate: string;
+  status?: TodoStatus;
+};

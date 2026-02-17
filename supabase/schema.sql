@@ -280,6 +280,21 @@ cross join lateral jsonb_array_elements(
 ) as entry
 on conflict (weekly_plan_id, source_update_id) do nothing;
 
+create table if not exists public.todo_items (
+  id text primary key,
+  title text not null,
+  details text,
+  due_date date not null,
+  status text not null check (status in ('not_done', 'done')),
+  created_by_user_id text not null references public.app_users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists ix_todo_items_due_date on public.todo_items(due_date asc);
+create index if not exists ix_todo_items_status_due_date on public.todo_items(status, due_date asc);
+create index if not exists ix_todo_items_owner on public.todo_items(created_by_user_id);
+
 create table if not exists public.task_access_meta (
   task_id text primary key references public.project_tasks(id) on delete cascade,
   owner_user_id text references public.app_users(id),
@@ -386,6 +401,7 @@ alter table public.task_hour_revisions enable row level security;
 alter table public.app_users enable row level security;
 alter table public.weekly_plans enable row level security;
 alter table public.weekly_plan_daily_entries enable row level security;
+alter table public.todo_items enable row level security;
 alter table public.task_access_meta enable row level security;
 
 -- ---------------------------------------------------------------------------
@@ -520,6 +536,42 @@ drop policy if exists "weekly plan entries delete" on public.weekly_plan_daily_e
 create policy "weekly plan entries delete" on public.weekly_plan_daily_entries
 for delete to authenticated
 using (public.app_is_super_user());
+
+drop policy if exists "todo items select" on public.todo_items;
+create policy "todo items select" on public.todo_items
+for select to authenticated
+using (
+  created_by_user_id = public.app_current_user_id()
+  or public.app_is_manager()
+);
+
+drop policy if exists "todo items insert" on public.todo_items;
+create policy "todo items insert" on public.todo_items
+for insert to authenticated
+with check (
+  created_by_user_id = public.app_current_user_id()
+  or public.app_is_manager()
+);
+
+drop policy if exists "todo items update" on public.todo_items;
+create policy "todo items update" on public.todo_items
+for update to authenticated
+using (
+  created_by_user_id = public.app_current_user_id()
+  or public.app_is_manager()
+)
+with check (
+  created_by_user_id = public.app_current_user_id()
+  or public.app_is_manager()
+);
+
+drop policy if exists "todo items delete" on public.todo_items;
+create policy "todo items delete" on public.todo_items
+for delete to authenticated
+using (
+  created_by_user_id = public.app_current_user_id()
+  or public.app_is_manager()
+);
 
 drop policy if exists "task access meta select" on public.task_access_meta;
 create policy "task access meta select" on public.task_access_meta
