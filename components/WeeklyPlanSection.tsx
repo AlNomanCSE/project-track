@@ -129,17 +129,40 @@ function escapeHtml(value: string) {
     .replaceAll("'", "&#39;");
 }
 
+function toMinutes(time: string) {
+  const [hours, mins] = time.split(":").map((part) => Number(part));
+  if (!Number.isFinite(hours) || !Number.isFinite(mins)) return null;
+  return hours * 60 + mins;
+}
+
 function getAttendanceStatus(checkIn?: string, checkOut?: string) {
   if (!checkIn && !checkOut) return "Not set";
   if (!checkIn || !checkOut) return "Incomplete";
 
-  const isLate = checkIn > OFFICE_START_TIME;
-  const leftEarly = checkOut < OFFICE_END_TIME;
+  const checkInMinutes = toMinutes(checkIn);
+  const checkOutMinutes = toMinutes(checkOut);
+  const officeStartMinutes = toMinutes(OFFICE_START_TIME);
+  const officeEndMinutes = toMinutes(OFFICE_END_TIME);
+  if (
+    checkInMinutes === null ||
+    checkOutMinutes === null ||
+    officeStartMinutes === null ||
+    officeEndMinutes === null
+  ) {
+    return "Invalid time";
+  }
 
-  if (!isLate && !leftEarly) return "On time";
-  if (isLate && leftEarly) return "Late + Early leave";
-  if (isLate) return "Late";
-  return "Early leave";
+  const lateMinutes = Math.max(0, checkInMinutes - officeStartMinutes);
+  const overtimeMinutes = Math.max(0, checkOutMinutes - officeEndMinutes);
+  const earlyLeaveMinutes = Math.max(0, officeEndMinutes - checkOutMinutes);
+
+  if (lateMinutes === 0 && earlyLeaveMinutes === 0 && overtimeMinutes === 0) return "On time";
+  if (lateMinutes > 0 && earlyLeaveMinutes > 0) return "Late + Early leave";
+  if (lateMinutes > 0) {
+    return overtimeMinutes >= lateMinutes ? "Late (Compensated)" : "Late (Shortfall)";
+  }
+  if (earlyLeaveMinutes > 0) return "Early leave";
+  return "On time + Overtime";
 }
 
 export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete, onNotify }: Props) {
