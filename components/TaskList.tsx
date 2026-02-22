@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Fragment, useState } from "react";
 import PopupModal from "@/components/PopupModal";
 import { formatShortDate } from "@/lib/date";
+import { getTaskPendingHours, getTaskTotalHours } from "@/lib/task-hours";
 import { STATUSES, type TaskApprovalStatus, type ProjectTask, type TaskStatus, type UserRole } from "@/lib/types";
 
 type EditPayload = {
@@ -29,6 +30,8 @@ type Props = {
   tasks: ProjectTask[];
   viewerRole: UserRole;
   viewerUserId: string;
+  readOnly?: boolean;
+  hideDetailsLink?: boolean;
   ownerByTaskId: Record<string, string | undefined>;
   approvalByTaskId: Record<string, TaskApprovalStatus>;
   onTaskUpdate: (taskId: string, payload: EditPayload) => void;
@@ -46,6 +49,8 @@ export default function TaskList({
   tasks,
   viewerRole,
   viewerUserId,
+  readOnly = false,
+  hideDetailsLink = false,
   ownerByTaskId,
   approvalByTaskId,
   onTaskUpdate,
@@ -54,12 +59,11 @@ export default function TaskList({
 }: Props) {
   const isClientViewer = viewerRole === "client";
   const isSuperViewer = viewerRole === "super_user";
-  const isManagerViewer = viewerRole === "admin" || viewerRole === "super_user";
   const canDeleteAnyTask = isSuperViewer;
 
-  const canEditTask = (taskId: string) => {
-    if (isManagerViewer) return true;
-    return ownerByTaskId[taskId] === viewerUserId;
+  const canEditTask = (_taskId: string) => {
+    if (readOnly) return false;
+    return isSuperViewer;
   };
 
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
@@ -208,7 +212,8 @@ export default function TaskList({
             {tasks.map((task) => {
               const isEditing = editingTaskId === task.id;
               const points = editPointsByTask[task.id] ?? [""];
-              const remainingHours = Math.max(task.estimatedHours - task.loggedHours, 0);
+              const remainingHours = getTaskPendingHours(task);
+              const totalHours = getTaskTotalHours(task);
 
               const selectedStatus = editStatusByTask[task.id] ?? task.status;
               const selectedStatusIndex = STATUSES.indexOf(selectedStatus);
@@ -244,20 +249,22 @@ export default function TaskList({
                     </td>
                     <td className="compact-cell">
                       <div>E: {task.estimatedHours}h</div>
-                      <div>L: {task.loggedHours}h</div>
+                      <div>L: {totalHours}h</div>
                       <div>R: {remainingHours}h</div>
                     </td>
                     <td>
                       <div className="action-stack">
-                        <Link href={`/requests/${task.id}`} className="button-link">
-                          Details
-                        </Link>
+                        {!hideDetailsLink ? (
+                          <Link href={`/requests/${task.id}`} className="button-link">
+                            Details
+                          </Link>
+                        ) : null}
                         {canEditTask(task.id) ? (
                           <button type="button" className="secondary" onClick={() => setEditConfirmTask(task)}>
                             Edit
                           </button>
                         ) : null}
-                        {canDeleteAnyTask ? (
+                        {canDeleteAnyTask && !readOnly ? (
                           <button type="button" className="danger" onClick={() => setDeleteConfirmStepOneTaskId(task.id)}>
                             Delete
                           </button>
