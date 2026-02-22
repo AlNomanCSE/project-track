@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { formatDateTime, formatShortDate } from "@/lib/date";
 import { readSessionUser, readUsers } from "@/lib/auth";
+import { getTaskPendingHours, getTaskTotalHours } from "@/lib/task-hours";
 import { getVisibleTasks, readTaskMetaById, type TaskMetaById } from "@/lib/task-access";
 import { taskRepository } from "@/lib/storage";
 import type { AppUser, ProjectTask } from "@/lib/types";
@@ -78,7 +79,8 @@ export default function RequestDetailsPage() {
   }
 
   const meta = taskMetaById[task.id];
-  const remainingHours = Math.max(task.estimatedHours - task.loggedHours, 0);
+  const remainingHours = getTaskPendingHours(task);
+  const totalHours = getTaskTotalHours(task);
   const estimatedCost = task.hourlyRate !== undefined ? (task.estimatedHours * task.hourlyRate).toFixed(2) : "Not set";
 
   return (
@@ -169,7 +171,7 @@ export default function RequestDetailsPage() {
           </div>
           <div>
             <small>Logged Hours</small>
-            <p>{task.loggedHours}</p>
+            <p>{totalHours}</p>
           </div>
           <div>
             <small>Remaining Hours</small>

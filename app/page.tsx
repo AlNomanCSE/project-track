@@ -9,6 +9,7 @@ import PopupModal from "@/components/PopupModal";
 import TodoSection from "@/components/TodoSection";
 import WeeklyPlanSection from "@/components/WeeklyPlanSection";
 import { taskRepository } from "@/lib/storage";
+import { getTaskPendingHours, getTaskTotalHours } from "@/lib/task-hours";
 import { todoRepository } from "@/lib/todo";
 import { weeklyPlanRepository } from "@/lib/weekly-plan";
 import { filterTasks, canTransition, applyStatusMetadata } from "@/lib/workflow";
@@ -38,6 +39,14 @@ import {
 import { isSuperUser } from "@/lib/super-user";
 
 type AppTheme = "dark" | "light";
+const GUEST_VIEWER: AppUser = {
+  id: "guest-viewer",
+  name: "Guest",
+  email: "guest@public.local",
+  role: "client",
+  status: "approved",
+  createdAt: new Date(0).toISOString()
+};
 
 function createId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -62,6 +71,7 @@ export default function HomePage() {
   const [requestTab, setRequestTab] = useState<"add" | "list">("add");
   const [listPage, setListPage] = useState(1);
   const [authTab, setAuthTab] = useState<"login" | "register">("login");
+  const [showAuthPanel, setShowAuthPanel] = useState(false);
 
   const [loginValues, setLoginValues] = useState({ email: "", password: "" });
   const [registerValues, setRegisterValues] = useState({
@@ -202,6 +212,7 @@ export default function HomePage() {
   }, []);
 
   const navigateMainTab = (tab: "requests" | "weekly" | "todo") => {
+    if (isPublicViewer && tab === "todo") return;
     const url =
       tab === "weekly" ? "/?tab=weekly" : tab === "todo" ? "/?tab=todo" : `/?tab=requests&rtab=${requestTab}`;
     window.history.pushState({}, "", url);
@@ -209,29 +220,44 @@ export default function HomePage() {
   };
 
   const navigateRequestTab = (tab: "add" | "list") => {
-    const url = `/?tab=requests&rtab=${tab}`;
+    const resolvedTab = isPublicViewer ? "list" : tab;
+    const url = `/?tab=requests&rtab=${resolvedTab}`;
     window.history.pushState({}, "", url);
-    setRequestTab(tab);
+    setRequestTab(resolvedTab);
     setActiveTab("requests");
   };
 
   const visibleTasks = useMemo(() => {
-    if (!currentUser) return [];
+    if (!currentUser) {
+      return filterTasks(tasks, filters).sort((a, b) => b.requestedDate.localeCompare(a.requestedDate));
+    }
+    if (currentUser.role === "client") {
+      return filterTasks(tasks, filters).sort((a, b) => b.requestedDate.localeCompare(a.requestedDate));
+    }
     const accessible = getVisibleTasks(tasks, taskMetaById, currentUser);
     return filterTasks(accessible, filters).sort((a, b) => b.requestedDate.localeCompare(a.requestedDate));
   }, [tasks, taskMetaById, currentUser, filters]);
   const isCurrentSuperUser = isSuperUser(currentUser);
-  const canManageTasks = !!currentUser && (currentUser.role === "admin" || currentUser.role === "super_user");
+  const isPublicViewer = !currentUser || currentUser.role === "client";
+  const isReadOnlyViewer = !isCurrentSuperUser;
+  const activeViewer = currentUser ?? GUEST_VIEWER;
+  const canManageTasks = !!currentUser && currentUser.role === "super_user";
   const visibleTodoItems = useMemo(() => {
     if (!currentUser) return [];
     if (currentUser.role === "admin" || currentUser.role === "super_user") return todoItems;
     return todoItems.filter((item) => item.createdByUserId === currentUser.id);
   }, [todoItems, currentUser]);
-  const canEditTaskByRole = (taskId: string) => {
+  const canEditTaskByRole = (_taskId: string) => {
     if (!currentUser) return false;
-    if (currentUser.role === "admin" || currentUser.role === "super_user") return true;
-    return taskMetaById[taskId]?.ownerUserId === currentUser.id;
+    if (isPublicViewer) return false;
+    return currentUser.role === "super_user";
   };
+
+  useEffect(() => {
+    if (!isPublicViewer) return;
+    if (requestTab !== "list") setRequestTab("list");
+    if (activeTab === "todo") setActiveTab("requests");
+  }, [isPublicViewer, requestTab, activeTab]);
 
   const approvalByTaskId = useMemo(() => {
     const map: Record<string, TaskApprovalStatus> = {};
@@ -268,8 +294,8 @@ export default function HomePage() {
 
   const hourSummary = useMemo(() => {
     const estimated = visibleTasks.reduce((sum, task) => sum + task.estimatedHours, 0);
-    const logged = visibleTasks.reduce((sum, task) => sum + task.loggedHours, 0);
-    const remaining = Math.max(estimated - logged, 0);
+    const logged = visibleTasks.reduce((sum, task) => sum + getTaskTotalHours(task), 0);
+    const remaining = visibleTasks.reduce((sum, task) => sum + getTaskPendingHours(task), 0);
     const completed = visibleTasks.filter((task) => task.status === "Completed" || task.status === "Handover").length;
 
     return { estimated, logged, remaining, completed };
@@ -360,7 +386,7 @@ export default function HomePage() {
     deliveryDateOverride?: string
   ) => {
     if (!canManageTasks || !currentUser) {
-      openModal("Access Denied", "Only admin/super user can update workflow status.", "error");
+      openModal("Access Denied", "Only super user can update workflow status.", "error");
       return;
     }
 
@@ -509,7 +535,7 @@ export default function HomePage() {
     }
   ) => {
     if (!canManageTasks || !currentUser) {
-      openModal("Access Denied", "Only admin/super user can update hours.", "error");
+      openModal("Access Denied", "Only super user can update hours.", "error");
       return;
     }
 
@@ -993,6 +1019,7 @@ export default function HomePage() {
     }
 
     setCurrentUser(result.user);
+    setShowAuthPanel(false);
     void refreshUsers();
     setLoginValues({ email: "", password: "" });
 
@@ -1016,6 +1043,7 @@ export default function HomePage() {
 
     if (result.user.status === "approved") {
       setCurrentUser(result.user);
+      setShowAuthPanel(false);
       const synced = ensureTaskMetaSync(tasks, result.user, taskMetaById);
       if (synced.changed) {
         persistTaskMeta(synced.next);
@@ -1035,6 +1063,7 @@ export default function HomePage() {
   const handleLogout = () => {
     logoutUser();
     setCurrentUser(null);
+    setShowAuthPanel(false);
     setPendingConfirmedUpdate(null);
     setConfirmedDeliveryDate("");
     openModal("Logged Out", "You have been logged out.", "info");
@@ -1044,7 +1073,7 @@ export default function HomePage() {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   };
 
-  if (!currentUser) {
+  if (!currentUser && showAuthPanel) {
     return (
       <main className="page auth-page">
         <section className="card stack">
@@ -1056,6 +1085,11 @@ export default function HomePage() {
           </div>
           <h1>Project Tracker</h1>
           <p className="muted">Register as Admin or Client. New accounts need admin approval (except first bootstrap admin).</p>
+          <div>
+            <button type="button" className="secondary" onClick={() => setShowAuthPanel(false)}>
+              Back To Guest View
+            </button>
+          </div>
 
           <div className="tab-header">
             <button
@@ -1163,15 +1197,17 @@ export default function HomePage() {
           <small>
             {isCurrentSuperUser
               ? "Super User Mode"
-              : currentUser.role === "admin"
+              : activeViewer.role === "admin"
                 ? "Admin Mode"
-                : "Client Mode"}
+                : currentUser
+                  ? "Client Mode"
+                  : "Guest Mode"}
           </small>
         </div>
         <div className="stack">
           <div className="sidebar-metric">
             <small>Logged User</small>
-            <strong>{currentUser.name}</strong>
+            <strong>{activeViewer.name}</strong>
           </div>
           <div className="sidebar-metric">
             <small>Total Requests</small>
@@ -1192,9 +1228,15 @@ export default function HomePage() {
               Super Users Page
             </Link>
           ) : null}
-          <button className="secondary" onClick={handleLogout}>
-            Logout
-          </button>
+          {currentUser ? (
+            <button className="secondary" onClick={handleLogout}>
+              Logout
+            </button>
+          ) : (
+            <button className="secondary" onClick={() => setShowAuthPanel(true)}>
+              Login / Register
+            </button>
+          )}
         </div>
       </aside>
 
@@ -1205,9 +1247,11 @@ export default function HomePage() {
             <p>
               {isCurrentSuperUser
                 ? "Super user can approve/reject users, approve tasks, and delete any admin/user."
-                : currentUser.role === "admin" || currentUser.role === "super_user"
-                  ? "Add your own requests and approve pending client requests."
-                  : "Add requests, view all requests, and edit only your own requests."}
+                : activeViewer.role === "admin" || activeViewer.role === "super_user"
+                  ? "Admin view is read-only for requests and weekly plans."
+                  : currentUser
+                    ? "Add requests, view all requests, and edit only your own requests."
+                    : "Public guest view: watch requests and weekly reports only."}
             </p>
           </div>
           <div className="status-lamp">
@@ -1263,11 +1307,12 @@ export default function HomePage() {
             <button
               type="button"
               className={activeTab === "todo" ? "tab-btn active" : "tab-btn"}
+              disabled={isPublicViewer}
               onClick={() => navigateMainTab("todo")}
             >
               To-Do
             </button>
-            {isCurrentSuperUser ? (
+            {activeViewer.role === "admin" || activeViewer.role === "super_user" || isPublicViewer ? (
               <button
                 type="button"
                 className={activeTab === "weekly" ? "tab-btn active" : "tab-btn"}
@@ -1281,13 +1326,15 @@ export default function HomePage() {
           {activeTab === "requests" ? (
             <div className="stack">
               <div className="tab-header">
-                <button
-                  type="button"
-                  className={requestTab === "add" ? "tab-btn active" : "tab-btn"}
-                  onClick={() => navigateRequestTab("add")}
-                >
-                  Add Request
-                </button>
+                {isCurrentSuperUser ? (
+                  <button
+                    type="button"
+                    className={requestTab === "add" ? "tab-btn active" : "tab-btn"}
+                    onClick={() => navigateRequestTab("add")}
+                  >
+                    Add Request
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className={requestTab === "list" ? "tab-btn active" : "tab-btn"}
@@ -1297,7 +1344,7 @@ export default function HomePage() {
                 </button>
               </div>
 
-              {requestTab === "add" ? (
+              {isCurrentSuperUser && requestTab === "add" ? (
                 <TaskForm onSubmit={addTask} onNotify={openModal} />
               ) : (
                 <>
@@ -1330,8 +1377,10 @@ export default function HomePage() {
                   </div>
                   <TaskList
                     tasks={paginatedVisibleTasks}
-                    viewerRole={currentUser.role}
-                    viewerUserId={currentUser.id}
+                    viewerRole={activeViewer.role}
+                    viewerUserId={activeViewer.id}
+                    readOnly={isReadOnlyViewer}
+                    hideDetailsLink={!currentUser}
                     ownerByTaskId={ownerByTaskId}
                     approvalByTaskId={approvalByTaskId}
                     onTaskUpdate={updateTask}
@@ -1350,13 +1399,14 @@ export default function HomePage() {
               onToggleStatus={handleTodoToggleStatus}
               onNotify={openModal}
             />
-          ) : isCurrentSuperUser ? (
+          ) : activeViewer.role === "admin" || activeViewer.role === "super_user" || isPublicViewer ? (
             <WeeklyPlanSection
               plans={weeklyPlans}
               onCreate={handleWeeklyPlanCreate}
               onUpdate={handleWeeklyPlanUpdate}
               onDelete={handleWeeklyPlanDelete}
               onNotify={openModal}
+              readOnly={isReadOnlyViewer}
             />
           ) : (
             <div className="card">Access denied.</div>

@@ -16,6 +16,7 @@ type Props = {
   onUpdate: (planId: string, input: WeeklyPlanInput) => void;
   onDelete: (planId: string) => void;
   onNotify: (title: string, message: string, variant?: "info" | "success" | "error") => void;
+  readOnly?: boolean;
 };
 
 type PlanForm = {
@@ -165,7 +166,7 @@ function getAttendanceStatus(checkIn?: string, checkOut?: string) {
   return "On time + Overtime";
 }
 
-export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete, onNotify }: Props) {
+export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete, onNotify, readOnly = false }: Props) {
   const PLANS_PER_PAGE = 10;
   const DAY_GROUPS_PER_PAGE = 1;
 
@@ -179,7 +180,7 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
   const [listPage, setListPage] = useState(1);
   const [draftDayPage, setDraftDayPage] = useState(1);
   const [planDayPages, setPlanDayPages] = useState<Record<string, number>>({});
-  const [activeView, setActiveView] = useState<"form" | "list" | "report">("form");
+  const [activeView, setActiveView] = useState<"form" | "list" | "report">(readOnly ? "list" : "form");
   const [reportMonth, setReportMonth] = useState<string>(() => currentMonthValue());
 
   const sortedPlans = useMemo(
@@ -330,6 +331,12 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
   useEffect(() => {
     if (draftDayPage > draftDayTotalPages) setDraftDayPage(draftDayTotalPages);
   }, [draftDayPage, draftDayTotalPages]);
+
+  useEffect(() => {
+    if (readOnly && activeView === "form") {
+      setActiveView("list");
+    }
+  }, [readOnly, activeView]);
 
   const resetForm = () => {
     setPlanForm(initialPlanForm());
@@ -768,21 +775,23 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
       <div className="row between gap">
         <div>
           <h2>Weekly Planner</h2>
-          <small>Day-wise updates only (Super Admin).</small>
+          <small>{readOnly ? "Read-only public view." : "Day-wise updates only (Super Admin)."}</small>
         </div>
-        <span className="badge" data-approval="approved">
-          Super Admin Only
+        <span className="badge" data-approval={readOnly ? "pending" : "approved"}>
+          {readOnly ? "Public View" : "Super Admin Only"}
         </span>
       </div>
 
       <div className="tab-header">
-        <button
-          type="button"
-          className={activeView === "form" ? "tab-btn active" : "tab-btn"}
-          onClick={() => setActiveView("form")}
-        >
-          Plan Form
-        </button>
+        {!readOnly ? (
+          <button
+            type="button"
+            className={activeView === "form" ? "tab-btn active" : "tab-btn"}
+            onClick={() => setActiveView("form")}
+          >
+            Plan Form
+          </button>
+        ) : null}
         <button
           type="button"
           className={activeView === "list" ? "tab-btn active" : "tab-btn"}
@@ -799,7 +808,7 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
         </button>
       </div>
 
-      {activeView === "form" ? (
+      {!readOnly && activeView === "form" ? (
         <>
           <div className="grid two">
             <label>
@@ -1151,14 +1160,16 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
                           <strong>
                             Week: {formatShortDate(plan.weekStartDate)} - {formatShortDate(plan.weekEndDate)}
                           </strong>
-                          <div className="row gap">
-                            <button type="button" className="secondary" onClick={() => startEdit(plan)}>
-                              Edit
-                            </button>
-                            <button type="button" className="danger" onClick={() => onDelete(plan.id)}>
-                              Delete
-                            </button>
-                          </div>
+                          {!readOnly ? (
+                            <div className="row gap">
+                              <button type="button" className="secondary" onClick={() => startEdit(plan)}>
+                                Edit
+                              </button>
+                              <button type="button" className="danger" onClick={() => onDelete(plan.id)}>
+                                Delete
+                              </button>
+                            </div>
+                          ) : null}
                         </div>
 
                         {dayGroups.length > 0 ? (
@@ -1203,13 +1214,15 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
                               <div key={`${plan.id}-${group.date}`} className="weekly-plan-item">
                                 <div className="row between gap">
                                   <strong>{formatShortDate(group.date)}</strong>
-                                  <button
-                                    type="button"
-                                    className="secondary"
-                                    onClick={() => downloadDayPdf(plan, group.date, group.items)}
-                                  >
-                                    Download PDF
-                                  </button>
+                                  {!readOnly ? (
+                                    <button
+                                      type="button"
+                                      className="secondary"
+                                      onClick={() => downloadDayPdf(plan, group.date, group.items)}
+                                    >
+                                      Download PDF
+                                    </button>
+                                  ) : null}
                                 </div>
                                 <div className="stack">
                                   {groupDailyUpdatesByDeveloper(group.items).map((devGroup) => (
@@ -1265,9 +1278,11 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
               Month
               <input type="month" value={reportMonth} onChange={(e) => setReportMonth(e.target.value || currentMonthValue())} />
             </label>
-            <button type="button" className="secondary" onClick={copyMonthlyReport}>
-              Copy Report Text
-            </button>
+            {!readOnly ? (
+              <button type="button" className="secondary" onClick={copyMonthlyReport}>
+                Copy Report Text
+              </button>
+            ) : null}
           </div>
           <div className="grid three">
             <div className="compact-cell">
@@ -1340,7 +1355,7 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
         </section>
       ) : null}
 
-      {isDayEditModalOpen && editingDayUpdateId ? (
+      {!readOnly && isDayEditModalOpen && editingDayUpdateId ? (
         <div className="modal-backdrop" onClick={cancelEditDailyUpdate}>
           <section className="modal-card modal-card-lg stack" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <div className="row between gap">

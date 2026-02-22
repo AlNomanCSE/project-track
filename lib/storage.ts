@@ -268,6 +268,9 @@ class SupabaseTaskRepository implements TaskRepository {
 
     const tasks = (taskRows ?? []) as DbTaskRow[];
     if (tasks.length === 0) {
+      // For guest/anon access, Supabase may return no rows due to RLS.
+      // Preserve any local cache instead of wiping it, so public read-only view can still render.
+      if (local.length > 0) return local;
       await this.fallback.write([]);
       return [];
     }
