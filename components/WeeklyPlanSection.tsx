@@ -41,7 +41,7 @@ type DayUpdateForm = {
   officeCheckOut: string;
 };
 
-const CORE_DEVELOPERS = ["Raihan", "Mainul", "Noman", "Imtiaz", "Mintu"] as const;
+const CORE_DEVELOPERS = ["Raihan", "Mainul", "Noman", "Imtiaz", "Mintu", "Mahir"] as const;
 const OFFICE_START_TIME = "10:00";
 const OFFICE_END_TIME = "19:00";
 
@@ -1271,7 +1271,7 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
         <section className="card stack">
           <div className="row between gap">
             <h3>Month-End Report Snapshot</h3>
-            <small>Developer report for Raihan, Mainul, Noman.</small>
+            <small>Developer report for Raihan, Mainul, Noman, Imtiaz, Mintu, Mahir.</small>
           </div>
           <div className="row gap">
             <label>
