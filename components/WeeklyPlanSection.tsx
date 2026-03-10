@@ -353,47 +353,6 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
     };
   }, [plans, reportFromDate, reportToDate, reportDeveloper, selectedDeveloperLabel, isInvalidReportRange]);
 
-  const monthlyReportText = useMemo(() => {
-    const header = [
-      `Developer Report (${reportRangeLabel})`,
-      reportDeveloper === "all" ? `Team: ${CORE_DEVELOPERS.join(", ")}` : `Developer: ${selectedDeveloperLabel}`,
-      `Total Updates: ${monthlyReport.allUpdatesCount}`,
-      `Total Hours: ${monthlyReport.allHours.toFixed(2)}h`
-    ];
-
-    const body = monthlyReport.rows.map((row) => {
-      const summary = [
-        `${row.developerName}:`,
-        `- Updates: ${row.totalUpdates}`,
-        `- Total Hours: ${row.totalHours.toFixed(2)}h`,
-        `- Avg Completion: ${row.avgProgress.toFixed(1)}%`,
-        `- 100% Completion Days: ${row.completedDays}`
-      ];
-      const dayWise = row.updates
-        .slice()
-        .sort((a, b) => a.date.localeCompare(b.date))
-        .map(
-          (update) =>
-            `  - ${update.date} | ${update.projectName ?? "-"} | ${update.workArea} | ${update.spentHours ?? "-"}h | ${update.progressPercent ?? 0}% | Morning: ${update.morningPlan ?? "-"} | Evening: ${update.eveningUpdate ?? update.note ?? "-"} | Blocker: ${update.hasBlocker ? (update.blockerDetails ?? "Yes") : "No"} | Pending: ${update.hasPendingWork ? (update.pendingWorkDetails ?? "Yes") : "No"}`
-        );
-      if (dayWise.length === 0) summary.push("  - No updates in selected date range.");
-      return [...summary, ...dayWise].join("\n");
-    });
-
-    const othersSection =
-      monthlyReport.others.length > 0
-        ? [
-            "Other Contributors:",
-            ...monthlyReport.others.map(
-              (row) =>
-                `- ${row.developerName}: ${row.totalUpdates} updates, ${row.totalHours.toFixed(2)}h, ${row.avgProgress.toFixed(1)}% avg`
-            )
-          ]
-        : [];
-
-    return [...header, "", ...body, ...(othersSection.length > 0 ? ["", ...othersSection] : [])].join("\n");
-  }, [monthlyReport, reportRangeLabel, reportDeveloper, selectedDeveloperLabel]);
-
   useEffect(() => {
     setListPage(1);
   }, [sortedPlans.length]);
@@ -542,17 +501,240 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
     setIsDayEditModalOpen(false);
   };
 
-  const copyMonthlyReport = async () => {
+  const downloadRangeReportPdf = () => {
     if (isInvalidReportRange) {
       onNotify("Validation", "From date cannot be after To date.", "error");
       return;
     }
-    try {
-      await navigator.clipboard.writeText(monthlyReportText);
-      onNotify("Copied", "Report text copied. Paste it to create your final report.", "success");
-    } catch {
-      onNotify("Copy Failed", "Clipboard access failed. Please copy from report view manually.", "error");
+
+    const updateRows = monthlyReport.rows
+      .flatMap((row) =>
+        row.updates.map((update) => ({ developerName: row.developerName, update }))
+      )
+      .sort((a, b) => a.update.date.localeCompare(b.update.date));
+
+    if (updateRows.length === 0) {
+      onNotify("No Data", "No updates found for selected filters.", "error");
+      return;
     }
+
+    const rows = updateRows
+      .map(
+        ({ developerName, update }, idx) => `
+          <tr>
+            <td>${idx + 1}</td>
+            <td>${escapeHtml(formatShortDate(update.date))}</td>
+            <td>${escapeHtml(developerName)}</td>
+            <td>${escapeHtml(update.projectName ?? "-")}</td>
+            <td>${escapeHtml(update.workArea)}</td>
+            <td>${update.spentHours ?? "-"}</td>
+            <td>${update.progressPercent ?? 0}%</td>
+            <td>${escapeHtml(update.morningPlan ?? "-")}</td>
+            <td>${escapeHtml(update.eveningUpdate ?? update.note ?? "-")}</td>
+            <td>${escapeHtml(update.hasBlocker ? (update.blockerDetails ?? "Yes") : "No")}</td>
+            <td>${escapeHtml(update.hasPendingWork ? (update.pendingWorkDetails ?? "Yes") : "No")}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+    const html = `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Developer Report - ${escapeHtml(reportRangeLabel)}</title>
+          <style>
+            @page {
+              size: A4 landscape;
+              margin: 10mm;
+            }
+            :root {
+              --ink: #17212b;
+              --muted: #5b6877;
+              --line: #d9e1ea;
+              --head-bg: #f3f6fa;
+              --brand: #1f6fb2;
+              --brand-soft: #e9f2fb;
+            }
+            * { box-sizing: border-box; }
+            body {
+              margin: 0;
+              font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+              color: var(--ink);
+              background: #ffffff;
+              padding: 24px;
+            }
+            .sheet {
+              border: 1px solid var(--line);
+              border-radius: 12px;
+              overflow: hidden;
+            }
+            .head {
+              background: linear-gradient(120deg, var(--brand-soft), #ffffff);
+              padding: 18px 20px;
+              border-bottom: 1px solid var(--line);
+            }
+            h1 {
+              margin: 0;
+              font-size: 20px;
+              letter-spacing: 0.02em;
+            }
+            .sub {
+              margin-top: 6px;
+              color: var(--muted);
+              font-size: 12px;
+            }
+            .meta-grid {
+              padding: 14px 20px;
+              display: grid;
+              grid-template-columns: repeat(4, minmax(0, 1fr));
+              gap: 10px;
+            }
+            .meta-card {
+              border: 1px solid var(--line);
+              border-radius: 10px;
+              padding: 10px 12px;
+              background: #fff;
+            }
+            .meta-card small {
+              display: block;
+              color: var(--muted);
+              font-size: 11px;
+              text-transform: uppercase;
+              letter-spacing: 0.05em;
+              margin-bottom: 4px;
+            }
+            .meta-card strong {
+              font-size: 14px;
+            }
+            .table-wrap {
+              padding: 6px 20px 20px;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              border: 1px solid var(--line);
+              table-layout: fixed;
+            }
+            th, td {
+              border-bottom: 1px solid var(--line);
+              padding: 8px 9px;
+              text-align: left;
+              vertical-align: top;
+              font-size: 11.5px;
+              overflow-wrap: anywhere;
+            }
+            th {
+              background: var(--head-bg);
+              color: #2a3a4c;
+              font-size: 10px;
+              text-transform: uppercase;
+              letter-spacing: 0.05em;
+            }
+            tbody tr:nth-child(even) td {
+              background: #fbfdff;
+            }
+            .hint {
+              margin-top: 10px;
+              color: var(--muted);
+              font-size: 11px;
+              text-align: right;
+            }
+            @media print {
+              body { padding: 0; }
+              .sheet { border: none; border-radius: 0; }
+              .hint { display: none; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="sheet">
+            <div class="head">
+              <h1>Developer Report</h1>
+              <div class="sub">Project Tracker • Date-wise Work Summary</div>
+            </div>
+            <div class="meta-grid">
+              <div class="meta-card">
+                <small>Date Range</small>
+                <strong>${escapeHtml(reportRangeLabel)}</strong>
+              </div>
+              <div class="meta-card">
+                <small>Developer</small>
+                <strong>${escapeHtml(selectedDeveloperLabel)}</strong>
+              </div>
+              <div class="meta-card">
+                <small>Total Updates</small>
+                <strong>${monthlyReport.allUpdatesCount}</strong>
+              </div>
+              <div class="meta-card">
+                <small>Total Hours</small>
+                <strong>${monthlyReport.allHours.toFixed(2)}h</strong>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Date</th>
+                    <th>Developer</th>
+                    <th>Project</th>
+                    <th>Work Area</th>
+                    <th>Hours</th>
+                    <th>Progress</th>
+                    <th>Morning Plan</th>
+                    <th>Evening Update</th>
+                    <th>Blocker</th>
+                    <th>Pending</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+              <p class="hint">Use Print → Save as PDF to export.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    const reportWindow = window.open("", "_blank", "noopener,noreferrer,width=1200,height=900");
+    if (reportWindow) {
+      reportWindow.document.open();
+      reportWindow.document.write(html);
+      reportWindow.document.close();
+      reportWindow.focus();
+      reportWindow.print();
+      return;
+    }
+
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+
+    const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!frameDoc || !iframe.contentWindow) {
+      document.body.removeChild(iframe);
+      onNotify("Print Failed", "Could not prepare print preview. Please allow popups and try again.", "error");
+      return;
+    }
+
+    frameDoc.open();
+    frameDoc.write(html);
+    frameDoc.close();
+
+    setTimeout(() => {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+      setTimeout(() => {
+        if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      }, 1500);
+    }, 150);
   };
 
   const downloadDayPdf = (plan: WeeklyPlan, date: string, updates: WeeklyPlanDailyUpdate[]) => {
@@ -1371,8 +1553,8 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
               </select>
             </label>
             {!readOnly ? (
-              <button type="button" className="secondary" onClick={copyMonthlyReport} disabled={isInvalidReportRange}>
-                Copy Report Text
+              <button type="button" className="secondary" onClick={downloadRangeReportPdf} disabled={isInvalidReportRange}>
+                Download PDF
               </button>
             ) : null}
           </div>
