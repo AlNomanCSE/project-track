@@ -121,6 +121,10 @@ function currentMonthValue() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function currentDateValue() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function escapeHtml(value: string) {
   return value
     .replaceAll("&", "&amp;")
@@ -181,7 +185,9 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
   const [draftDayPage, setDraftDayPage] = useState(1);
   const [planDayPages, setPlanDayPages] = useState<Record<string, number>>({});
   const [activeView, setActiveView] = useState<"form" | "list" | "report">(readOnly ? "list" : "form");
-  const [reportMonth, setReportMonth] = useState<string>(() => currentMonthValue());
+  const [reportFromDate, setReportFromDate] = useState<string>(() => `${currentMonthValue()}-01`);
+  const [reportToDate, setReportToDate] = useState<string>(() => currentDateValue());
+  const [reportDeveloper, setReportDeveloper] = useState<string>("all");
 
   const sortedPlans = useMemo(
     () => [...plans].sort((a, b) => b.weekStartDate.localeCompare(a.weekStartDate)),
@@ -200,8 +206,42 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
     const start = (page - 1) * DAY_GROUPS_PER_PAGE;
     return draftDayGroups.slice(start, start + DAY_GROUPS_PER_PAGE);
   }, [draftDayGroups, draftDayPage, draftDayTotalPages]);
+
+  const reportDeveloperOptions = useMemo(() => {
+    const coreKeys = new Set(CORE_DEVELOPERS.map((name) => name.toLowerCase()));
+    const extras = new Map<string, string>();
+    for (const plan of plans) {
+      for (const update of plan.dailyUpdates) {
+        const name = update.developerName.trim();
+        if (!name) continue;
+        const key = name.toLowerCase();
+        if (coreKeys.has(key) || extras.has(key)) continue;
+        extras.set(key, name);
+      }
+    }
+
+    const sortedExtras = [...extras.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    return [
+      { value: "all", label: "All Developers" },
+      ...CORE_DEVELOPERS.map((name) => ({ value: name.toLowerCase(), label: name })),
+      ...sortedExtras.map(([value, label]) => ({ value, label }))
+    ];
+  }, [plans]);
+
+  const selectedDeveloperLabel = useMemo(() => {
+    return reportDeveloperOptions.find((item) => item.value === reportDeveloper)?.label ?? reportDeveloper;
+  }, [reportDeveloperOptions, reportDeveloper]);
+
+  const isInvalidReportRange = Boolean(reportFromDate && reportToDate && reportFromDate > reportToDate);
+
+  const reportRangeLabel = useMemo(() => {
+    if (reportFromDate && reportToDate) return `${reportFromDate} to ${reportToDate}`;
+    if (reportFromDate) return `From ${reportFromDate}`;
+    if (reportToDate) return `Until ${reportToDate}`;
+    return "All Dates";
+  }, [reportFromDate, reportToDate]);
+
   const monthlyReport = useMemo(() => {
-    const monthPrefix = reportMonth;
     const coreNameByKey = new Map(CORE_DEVELOPERS.map((name) => [name.toLowerCase(), name]));
     const map = new Map<
       string,
@@ -218,11 +258,14 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
 
     for (const plan of plans) {
       for (const update of plan.dailyUpdates) {
-        if (!update.date.startsWith(monthPrefix)) continue;
+        if (isInvalidReportRange) continue;
+        if (reportFromDate && update.date < reportFromDate) continue;
+        if (reportToDate && update.date > reportToDate) continue;
         const typedName = update.developerName.trim();
         const normalizedKey = typedName.toLowerCase();
         const canonicalName = coreNameByKey.get(normalizedKey) ?? typedName;
         const key = canonicalName.toLowerCase();
+        if (reportDeveloper !== "all" && key !== reportDeveloper) continue;
         if (!key) continue;
         const item = map.get(key) ?? {
           developerName: canonicalName,
@@ -243,6 +286,37 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
         item.updates.push(update);
         map.set(key, item);
       }
+    }
+
+    if (reportDeveloper !== "all") {
+      const item = map.get(reportDeveloper);
+      const row = item
+        ? {
+            ...item,
+            avgProgress: item.progressCount > 0 ? item.progressSum / item.progressCount : 0
+          }
+        : {
+            developerName: selectedDeveloperLabel,
+            totalUpdates: 0,
+            totalHours: 0,
+            avgProgress: 0,
+            completedDays: 0,
+            updates: [] as WeeklyPlanDailyUpdate[]
+          };
+
+      return {
+        rows: [row],
+        others: [] as Array<{
+          developerName: string;
+          totalUpdates: number;
+          totalHours: number;
+          avgProgress: number;
+          completedDays: number;
+          updates: WeeklyPlanDailyUpdate[];
+        }>,
+        allUpdatesCount: row.totalUpdates,
+        allHours: row.totalHours
+      };
     }
 
     const rows = CORE_DEVELOPERS.map((developerName) => {
@@ -277,12 +351,12 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
       allUpdatesCount: [...map.values()].reduce((sum, item) => sum + item.totalUpdates, 0),
       allHours: [...map.values()].reduce((sum, item) => sum + item.totalHours, 0)
     };
-  }, [plans, reportMonth]);
+  }, [plans, reportFromDate, reportToDate, reportDeveloper, selectedDeveloperLabel, isInvalidReportRange]);
 
   const monthlyReportText = useMemo(() => {
     const header = [
-      `Monthly Developer Report (${reportMonth})`,
-      `Team: ${CORE_DEVELOPERS.join(", ")}`,
+      `Developer Report (${reportRangeLabel})`,
+      reportDeveloper === "all" ? `Team: ${CORE_DEVELOPERS.join(", ")}` : `Developer: ${selectedDeveloperLabel}`,
       `Total Updates: ${monthlyReport.allUpdatesCount}`,
       `Total Hours: ${monthlyReport.allHours.toFixed(2)}h`
     ];
@@ -302,7 +376,7 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
           (update) =>
             `  - ${update.date} | ${update.projectName ?? "-"} | ${update.workArea} | ${update.spentHours ?? "-"}h | ${update.progressPercent ?? 0}% | Morning: ${update.morningPlan ?? "-"} | Evening: ${update.eveningUpdate ?? update.note ?? "-"} | Blocker: ${update.hasBlocker ? (update.blockerDetails ?? "Yes") : "No"} | Pending: ${update.hasPendingWork ? (update.pendingWorkDetails ?? "Yes") : "No"}`
         );
-      if (dayWise.length === 0) summary.push("  - No updates in this month.");
+      if (dayWise.length === 0) summary.push("  - No updates in selected date range.");
       return [...summary, ...dayWise].join("\n");
     });
 
@@ -318,7 +392,7 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
         : [];
 
     return [...header, "", ...body, ...(othersSection.length > 0 ? ["", ...othersSection] : [])].join("\n");
-  }, [monthlyReport, reportMonth]);
+  }, [monthlyReport, reportRangeLabel, reportDeveloper, selectedDeveloperLabel]);
 
   useEffect(() => {
     setListPage(1);
@@ -469,9 +543,13 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
   };
 
   const copyMonthlyReport = async () => {
+    if (isInvalidReportRange) {
+      onNotify("Validation", "From date cannot be after To date.", "error");
+      return;
+    }
     try {
       await navigator.clipboard.writeText(monthlyReportText);
-      onNotify("Copied", "Monthly report text copied. Paste it to create your final report.", "success");
+      onNotify("Copied", "Report text copied. Paste it to create your final report.", "success");
     } catch {
       onNotify("Copy Failed", "Clipboard access failed. Please copy from report view manually.", "error");
     }
@@ -1270,20 +1348,35 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
       {activeView === "report" ? (
         <section className="card stack">
           <div className="row between gap">
-            <h3>Month-End Report Snapshot</h3>
-            <small>Developer report for Raihan, Mainul, Noman, Imtiaz, Mintu, Mahir.</small>
+            <h3>Date-Range Report Snapshot</h3>
+            <small>Filter by date range and developer.</small>
           </div>
           <div className="row gap">
             <label>
-              Month
-              <input type="month" value={reportMonth} onChange={(e) => setReportMonth(e.target.value || currentMonthValue())} />
+              From
+              <input type="date" value={reportFromDate} onChange={(e) => setReportFromDate(e.target.value)} />
+            </label>
+            <label>
+              To
+              <input type="date" value={reportToDate} onChange={(e) => setReportToDate(e.target.value)} />
+            </label>
+            <label>
+              Developer
+              <select value={reportDeveloper} onChange={(e) => setReportDeveloper(e.target.value)}>
+                {reportDeveloperOptions.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
             </label>
             {!readOnly ? (
-              <button type="button" className="secondary" onClick={copyMonthlyReport}>
+              <button type="button" className="secondary" onClick={copyMonthlyReport} disabled={isInvalidReportRange}>
                 Copy Report Text
               </button>
             ) : null}
           </div>
+          {isInvalidReportRange ? <small className="muted">From date cannot be after To date.</small> : null}
           <div className="grid three">
             <div className="compact-cell">
               <small>Total Updates</small>
@@ -1294,8 +1387,8 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
               <strong>{monthlyReport.allHours.toFixed(2)}h</strong>
             </div>
             <div className="compact-cell">
-              <small>Month</small>
-              <strong>{reportMonth}</strong>
+              <small>{reportDeveloper === "all" ? "Date Range" : "Developer"}</small>
+              <strong>{reportDeveloper === "all" ? reportRangeLabel : selectedDeveloperLabel}</strong>
             </div>
           </div>
           <div className="stack">
@@ -1336,7 +1429,7 @@ export default function WeeklyPlanSection({ plans, onCreate, onUpdate, onDelete,
                         </div>
                       ))
                   ) : (
-                    <small className="muted">No updates in this month.</small>
+                    <small className="muted">No updates in selected date range.</small>
                   )}
                 </div>
               </div>
