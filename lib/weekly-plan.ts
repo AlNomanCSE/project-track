@@ -56,7 +56,7 @@ function normalizeWorkArea(value: unknown): WeeklyDayWorkArea {
 
 function normalizeDailyUpdates(value: unknown): WeeklyPlanDailyUpdate[] {
   if (!Array.isArray(value)) return [];
-  const isValidTime = (time: unknown) => typeof time === "string" && /^\d{2}:\d{2}$/.test(time);
+  const isValidTime = (time: unknown) => typeof time === "string" && /^\d{2}:\d{2}(:\d{2})?$/.test(time);
   const toBool = (v: unknown) => v === true || v === "true";
 
   const mapped = value
@@ -77,8 +77,10 @@ function normalizeDailyUpdates(value: unknown): WeeklyPlanDailyUpdate[] {
       const spentHours = Number.isFinite(spentHoursRaw) && spentHoursRaw >= 0 ? spentHoursRaw : undefined;
       const progressRaw = Number(record.progressPercent);
       const progressPercent = Number.isFinite(progressRaw) ? Math.min(Math.max(progressRaw, 0), 100) : undefined;
-      const officeCheckIn = isValidTime(record.officeCheckIn) ? (record.officeCheckIn as string) : undefined;
-      const officeCheckOut = isValidTime(record.officeCheckOut) ? (record.officeCheckOut as string) : undefined;
+      const rawIn = isValidTime(record.officeCheckIn) ? (record.officeCheckIn as string) : undefined;
+      const rawOut = isValidTime(record.officeCheckOut) ? (record.officeCheckOut as string) : undefined;
+      const officeCheckIn = rawIn ? rawIn.substring(0, 5) : undefined;
+      const officeCheckOut = rawOut ? rawOut.substring(0, 5) : undefined;
       const hasBlocker = toBool(record.hasBlocker);
       const blockerDetails = safeString(record.blockerDetails).trim();
       const hasPendingWork = toBool(record.hasPendingWork);
